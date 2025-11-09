@@ -1,12 +1,20 @@
 import requests
 import json
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 import io
 import os
 from flask import Flask, request
 
-# Конфигурация
+# Костыль для imghdr в Python 3.13
+try:
+    import imghdr
+except ImportError:
+    import magic
+    imghdr = None
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
+
+# Остальной код без изменений...
 API_KEY = "AIzaSyARZYE8kSTBVlGF_A1jxFdEQdVi5-9MN38"
 BOT_TOKEN = "2201149182:AAG5kZQcl8AqMgbqqCGu4eiyik8AIFQA03Q/test"
 SELECTED_MODEL = "gemini-2.5-flash"
