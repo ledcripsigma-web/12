@@ -388,14 +388,14 @@ def show_subscription_info(message):
 
 У вас **{balance} запросов** 🧑‍💻
 
-🎯 1 запрос = 2 торта
-
 💳 Купить запросы: @xostcodingkrytoy
 
-📝 После оплаты напишите админу:
+📝 Для покупки отправьте админу:
 - Ваш ID: `{user_id}`
 - Количество запросов
-- Скриншот оплаты"""
+- Скриншот оплаты
+
+💰 1 запрос = 2 торта"""
     
     markup = types.InlineKeyboardMarkup()
     buy_btn = types.InlineKeyboardButton('💳 Купить запросы', url='https://t.me/xostcodingkrytoy')
