@@ -11,9 +11,9 @@ import sqlite3
 from datetime import datetime
 
 # Конфигурация
-API_KEY = "AIzaSyB5goqEKTAWUedBYDL1mPxgTiBSGhuAlbM"
+API_KEY = "sk-BCXFTfe4JlgUJNJcv6vtW7bqk1AuBmZQwEjiccj2t4RG52WKTmPw1vBrnPnD"
 BOT_TOKEN = "2201851225:AAEruvQjAyxiYIcsVCwa-JoIcWaXMx4kqE8/test"
-SELECTED_MODEL = "gemini-pro"
+SELECTED_MODEL = "llama-3.3-70b-versatile"
 CHANNEL_USERNAME = "@GeniAi"
 ADMIN_ID = 2202291197  # Твой ID
 
