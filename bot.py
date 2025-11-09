@@ -14,7 +14,8 @@ from datetime import datetime
 API_KEY = "AIzaSyARZYE8kSTBVlGF_A1jxFdEQdVi5-9MN38"
 BOT_TOKEN = "2201851225:AAEruvQjAyxiYIcsVCwa-JoIcWaXMx4kqE8/test"
 SELECTED_MODEL = "gemini-2.5-flash"
-CHANNEL_USERNAME = "@GeniAi"  # Канал для подписки
+CHANNEL_USERNAME = "@GeniAi"
+ADMIN_ID = 2202291197  # Твой ID
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
@@ -30,6 +31,7 @@ def init_db():
             first_name TEXT,
             last_name TEXT,
             subscribed INTEGER DEFAULT 0,
+            requests_balance INTEGER DEFAULT 5,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -41,6 +43,16 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users (user_id)
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS requests_history (
+            user_id INTEGER,
+            requests_change INTEGER,
+            reason TEXT,
+            admin_id INTEGER,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -48,6 +60,7 @@ init_db()
 
 # Хранилище состояний пользователей
 user_states = {}
+admin_states = {}
 
 def keep_alive():
     """Функция для поддержания бота активным"""
@@ -64,8 +77,8 @@ def add_user(user_id, username, first_name, last_name):
     conn = sqlite3.connect('bot_stats.db')
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT OR IGNORE INTO users (user_id, username, first_name, last_name)
-        VALUES (?, ?, ?, ?)
+        INSERT OR IGNORE INTO users (user_id, username, first_name, last_name, requests_balance)
+        VALUES (?, ?, ?, ?, 5)
     ''', (user_id, username, first_name, last_name))
     conn.commit()
     conn.close()
@@ -79,6 +92,56 @@ def update_subscription(user_id, subscribed):
     ''', (subscribed, user_id))
     conn.commit()
     conn.close()
+
+def get_user_balance(user_id):
+    """Получает баланс запросов пользователя"""
+    conn = sqlite3.connect('bot_stats.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT requests_balance FROM users WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else 0
+
+def update_user_balance(user_id, new_balance):
+    """Обновляет баланс запросов пользователя"""
+    conn = sqlite3.connect('bot_stats.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        UPDATE users SET requests_balance = ? WHERE user_id = ?
+    ''', (new_balance, user_id))
+    conn.commit()
+    conn.close()
+
+def add_requests(user_id, amount, reason, admin_id=None):
+    """Добавляет запросы пользователю"""
+    current_balance = get_user_balance(user_id)
+    new_balance = current_balance + amount
+    
+    conn = sqlite3.connect('bot_stats.db')
+    cursor = conn.cursor()
+    
+    # Обновляем баланс
+    cursor.execute('UPDATE users SET requests_balance = ? WHERE user_id = ?', (new_balance, user_id))
+    
+    # Добавляем в историю
+    cursor.execute('''
+        INSERT INTO requests_history (user_id, requests_change, reason, admin_id)
+        VALUES (?, ?, ?, ?)
+    ''', (user_id, amount, reason, admin_id))
+    
+    conn.commit()
+    conn.close()
+    
+    return new_balance
+
+def use_request(user_id):
+    """Использует один запрос"""
+    current_balance = get_user_balance(user_id)
+    if current_balance > 0:
+        new_balance = current_balance - 1
+        update_user_balance(user_id, new_balance)
+        return True, new_balance
+    return False, current_balance
 
 def add_stat(user_id, action_type):
     """Добавляет статистику действия"""
@@ -95,21 +158,20 @@ def get_stats():
     conn = sqlite3.connect('bot_stats.db')
     cursor = conn.cursor()
     
-    # Всего пользователей
     cursor.execute('SELECT COUNT(*) FROM users')
     total_users = cursor.fetchone()[0]
     
-    # Создано кодов
     cursor.execute('SELECT COUNT(*) FROM stats WHERE action_type = "code_generated"')
     codes_generated = cursor.fetchone()[0]
     
-    # Создано плагинов
     cursor.execute('SELECT COUNT(*) FROM stats WHERE action_type = "plugin_generated"')
     plugins_generated = cursor.fetchone()[0]
     
-    # Изменено кодов
     cursor.execute('SELECT COUNT(*) FROM stats WHERE action_type = "code_modified"')
     codes_modified = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT SUM(requests_balance) FROM users')
+    total_requests = cursor.fetchone()[0] or 0
     
     conn.close()
     
@@ -117,7 +179,8 @@ def get_stats():
         'total_users': total_users,
         'codes_generated': codes_generated,
         'plugins_generated': plugins_generated,
-        'codes_modified': codes_modified
+        'codes_modified': codes_modified,
+        'total_requests': total_requests
     }
 
 def check_subscription(user_id):
@@ -146,15 +209,9 @@ class GeminiChat:
             Требования для плагина:
             1. Создай полноценный Python плагин для exteragram
             2. Добавь все необходимые импорты
-            3. В начале файла добавь метаданные плагина:
-               __id__ = "уникальный_ид"
-               __name__ = "Название плагина"
-               __description__ = "Описание плагина"
-               __author__ = "@автор"
-               __version__ = "1.0.0"
-               __min_version__ = "11.12.0"
+            3. В начале файла добавь метаданные плагина
             4. Наследуй от BasePlugin
-            5. Добавь все необходимые методы: on_plugin_load, create_settings и т.д.
+            5. Добавь все необходимые методы
             6. Добавь комментарии в код где это уместно
 
             Формат ответа:
@@ -175,8 +232,6 @@ class GeminiChat:
             Формат ответа:
             Описание: [краткое описание 2-3 предложения]
             Код: [python код]
-
-            Если запрос не связан с программированием, всё равно создай соответствующий Python код.
             """
         else:
             prompt = f"""
@@ -272,10 +327,8 @@ def send_welcome(message):
     first_name = message.from_user.first_name
     last_name = message.from_user.last_name
     
-    # Добавляем пользователя в базу
     add_user(user_id, username, first_name, last_name)
     
-    # Проверяем подписку
     if check_subscription(user_id):
         update_subscription(user_id, 1)
         show_main_menu(message)
@@ -284,7 +337,6 @@ def send_welcome(message):
         show_subscription_request(message)
 
 def show_subscription_request(message):
-    """Показывает запрос на подписку"""
     markup = types.InlineKeyboardMarkup()
     subscribe_btn = types.InlineKeyboardButton('Подписаться ✅', url='https://t.me/GeniAi')
     check_btn = types.InlineKeyboardButton('Проверить подписку 🔄', callback_data='check_subscription')
@@ -300,22 +352,140 @@ def show_subscription_request(message):
     bot.send_message(message.chat.id, text, reply_markup=markup)
 
 def show_main_menu(message):
-    """Показывает главное меню"""
+    user_id = message.from_user.id
+    balance = get_user_balance(user_id)
+    
     markup = types.InlineKeyboardMarkup(row_width=1)
     btn1 = types.InlineKeyboardButton('📝 Написать код', callback_data='write_code')
     btn2 = types.InlineKeyboardButton('🔌 Написать плагин', callback_data='write_plugin')
     btn3 = types.InlineKeyboardButton('🔧 Изменить готовый', callback_data='modify_code')
     btn4 = types.InlineKeyboardButton('📊 Статистика', callback_data='stats')
-    btn5 = types.InlineKeyboardButton('👨‍💻 Автор бота', callback_data='author')
-    markup.add(btn1, btn2, btn3, btn4, btn5)
+    btn5 = types.InlineKeyboardButton('💎 Подписка', callback_data='subscription')
+    btn6 = types.InlineKeyboardButton('👨‍💻 Автор бота', callback_data='author')
     
-    welcome_text = """🤖 Привет, я GeniAi!
+    # Добавляем админ-панель только для админа
+    if message.from_user.id == ADMIN_ID:
+        btn7 = types.InlineKeyboardButton('👑 Админ панель', callback_data='admin_panel')
+        markup.add(btn1, btn2, btn3, btn4, btn5, btn6, btn7)
+    else:
+        markup.add(btn1, btn2, btn3, btn4, btn5, btn6)
+    
+    welcome_text = f"""🤖 Привет, я GeniAi!
 Ваш помощник для создания Python кодов и плагинов
+
+💎 Ваш баланс: {balance} запросов
 
 Просто выберите, с чего начнём:"""
     
     bot.send_message(message.chat.id, welcome_text, reply_markup=markup)
     user_states[message.chat.id] = 'main_menu'
+
+def show_subscription_info(message):
+    user_id = message.from_user.id
+    balance = get_user_balance(user_id)
+    
+    text = f"""💎 **Информация о подписке**
+
+У вас **{balance} запросов** 🧑‍💻
+
+🎯 1 запрос = 2 торта
+
+💳 Купить запросы: @xostcodingkrytoy
+
+📝 После оплаты напишите админу:
+- Ваш ID: `{user_id}`
+- Количество запросов
+- Скриншот оплаты"""
+    
+    markup = types.InlineKeyboardMarkup()
+    buy_btn = types.InlineKeyboardButton('💳 Купить запросы', url='https://t.me/xostcodingkrytoy')
+    back_btn = types.InlineKeyboardButton('🔙 Назад', callback_data='back_to_menu')
+    markup.add(buy_btn)
+    markup.add(back_btn)
+    
+    bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode='Markdown')
+
+def show_admin_panel(message):
+    stats = get_stats()
+    
+    text = f"""👑 **Админ панель**
+
+📊 Статистика:
+👥 Пользователей: {stats['total_users']}
+📝 Кодов создано: {stats['codes_generated']}
+🔌 Плагинов создано: {stats['plugins_generated']}
+🔧 Кодов изменено: {stats['codes_modified']}
+💎 Всего запросов: {stats['total_requests']}
+
+⚙️ Команды:
+/request [id] [количество] - выдать запросы пользователю
+/users - список пользователей"""
+    
+    bot.send_message(message.chat.id, text, parse_mode='Markdown')
+
+@bot.message_handler(commands=['request'])
+def handle_request_command(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    try:
+        _, user_id, amount = message.text.split()
+        user_id = int(user_id)
+        amount = int(amount)
+        
+        new_balance = add_requests(user_id, amount, "Выдача админом", ADMIN_ID)
+        
+        # Уведомляем пользователя
+        try:
+            user_info = f"Пользователь {user_id}"
+            conn = sqlite3.connect('bot_stats.db')
+            cursor = conn.cursor()
+            cursor.execute('SELECT username, first_name FROM users WHERE user_id = ?', (user_id,))
+            user_data = cursor.fetchone()
+            conn.close()
+            
+            if user_data:
+                username, first_name = user_data
+                user_info = f"@{username}" if username else first_name
+            
+            user_message = f"""🎉 Спасибо за покупку! 👑
+
+💎 Вам было выдано **{amount}** запросов
+💰 Ваш текущий баланс: **{new_balance} запросов**
+
+Приятного использования! 🚀"""
+            
+            bot.send_message(user_id, user_message, parse_mode='Markdown')
+        except:
+            pass
+        
+        bot.send_message(message.chat.id, f"✅ Пользователю {user_info} выдано {amount} запросов. Новый баланс: {new_balance}")
+        
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ Неправильный формат. Используйте: /request [id] [количество]")
+
+@bot.message_handler(commands=['users'])
+def handle_users_command(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    conn = sqlite3.connect('bot_stats.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT user_id, username, first_name, requests_balance FROM users ORDER BY created_at DESC LIMIT 10')
+    users = cursor.fetchall()
+    conn.close()
+    
+    if not users:
+        bot.send_message(message.chat.id, "📭 Пользователей нет")
+        return
+    
+    text = "👥 Последние 10 пользователей:\n\n"
+    for user in users:
+        user_id, username, first_name, balance = user
+        user_info = f"@{username}" if username else first_name
+        text += f"🆔 {user_id} | 👤 {user_info} | 💎 {balance}\n"
+    
+    bot.send_message(message.chat.id, text)
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
@@ -332,32 +502,59 @@ def handle_callback(call):
     
     elif check_subscription(user_id):
         if call.data == 'write_code':
-            msg = bot.send_message(chat_id, "💡 Опишите, какой код вам нужен:")
-            bot.register_next_step_handler(msg, process_code_request)
-            user_states[chat_id] = 'waiting_code_request'
+            balance = get_user_balance(user_id)
+            if balance <= 0:
+                bot.answer_callback_query(call.id, "❌ У вас закончились запросы!")
+                show_subscription_info(call.message)
+            else:
+                msg = bot.send_message(chat_id, "💡 Опишите, какой код вам нужен:")
+                bot.register_next_step_handler(msg, process_code_request)
+                user_states[chat_id] = 'waiting_code_request'
             
         elif call.data == 'write_plugin':
-            msg = bot.send_message(chat_id, "🔌 Опишите, какой плагин вам нужен:")
-            bot.register_next_step_handler(msg, process_plugin_request)
-            user_states[chat_id] = 'waiting_plugin_request'
+            balance = get_user_balance(user_id)
+            if balance <= 0:
+                bot.answer_callback_query(call.id, "❌ У вас закончились запросы!")
+                show_subscription_info(call.message)
+            else:
+                msg = bot.send_message(chat_id, "🔌 Опишите, какой плагин вам нужен:")
+                bot.register_next_step_handler(msg, process_plugin_request)
+                user_states[chat_id] = 'waiting_plugin_request'
             
         elif call.data == 'modify_code':
-            msg = bot.send_message(chat_id, "📎 Отправьте ваш .py файл, который нужно изменить")
-            user_states[chat_id] = 'waiting_code_file'
+            balance = get_user_balance(user_id)
+            if balance <= 0:
+                bot.answer_callback_query(call.id, "❌ У вас закончились запросы!")
+                show_subscription_info(call.message)
+            else:
+                msg = bot.send_message(chat_id, "📎 Отправьте ваш .py файл, который нужно изменить")
+                user_states[chat_id] = 'waiting_code_file'
             
         elif call.data == 'stats':
             stats = get_stats()
+            user_balance = get_user_balance(user_id)
             stats_text = f"""📊 Статистика бота:
 
 👥 Всего пользователей: {stats['total_users']}
 📝 Создано кодов: {stats['codes_generated']}
 🔌 Создано плагинов: {stats['plugins_generated']}
-🔧 Изменено кодов: {stats['codes_modified']}"""
+🔧 Изменено кодов: {stats['codes_modified']}
+💎 Ваш баланс: {user_balance} запросов"""
             
             bot.send_message(chat_id, stats_text)
             
+        elif call.data == 'subscription':
+            show_subscription_info(call.message)
+            
         elif call.data == 'author':
             bot.send_message(chat_id, "👨‍💻 Автор бота: @xostcodingkrytoy")
+            
+        elif call.data == 'admin_panel':
+            if user_id == ADMIN_ID:
+                show_admin_panel(call.message)
+                
+        elif call.data == 'back_to_menu':
+            show_main_menu(call.message)
     
     else:
         bot.answer_callback_query(call.id, "❌ Сначала подпишитесь на канал!")
@@ -366,6 +563,14 @@ def handle_callback(call):
 def process_code_request(message):
     if not check_subscription(message.from_user.id):
         show_subscription_request(message)
+        return
+        
+    user_id = message.from_user.id
+    success, new_balance = use_request(user_id)
+    
+    if not success:
+        bot.send_message(message.chat.id, "❌ У вас закончились запросы! Нажмите на подписку чтобы купить новые 💎")
+        show_subscription_info(message)
         return
         
     chat_id = message.chat.id
@@ -384,6 +589,8 @@ def process_code_request(message):
         if response.startswith('❌'):
             bot.delete_message(chat_id, processing_msg.message_id)
             bot.send_message(chat_id, response)
+            # Возвращаем запрос если ошибка
+            add_requests(user_id, 1, "Возврат при ошибке")
         else:
             description, code = parse_code_response(response)
             
@@ -392,19 +599,28 @@ def process_code_request(message):
             
             bot.delete_message(chat_id, processing_msg.message_id)
             bot.send_document(chat_id, file_buffer, 
-                             caption=f"📁 Готовый код\n\n📝 Описание:\n{description}\n\n✅ Файл готов к использованию!")
+                             caption=f"📁 Готовый код\n\n📝 Описание:\n{description}\n\n💎 Осталось запросов: {new_balance}")
             user_states[chat_id] = 'main_menu'
             
-            # Добавляем статистику
-            add_stat(message.from_user.id, "code_generated")
+            add_stat(user_id, "code_generated")
         
     except Exception as e:
         bot.delete_message(chat_id, processing_msg.message_id)
         bot.send_message(chat_id, f"❌ Произошла ошибка при генерации кода: {str(e)}")
+        # Возвращаем запрос если ошибка
+        add_requests(user_id, 1, "Возврат при ошибке")
 
 def process_plugin_request(message):
     if not check_subscription(message.from_user.id):
         show_subscription_request(message)
+        return
+        
+    user_id = message.from_user.id
+    success, new_balance = use_request(user_id)
+    
+    if not success:
+        bot.send_message(message.chat.id, "❌ У вас закончились запросы! Нажмите на подписку чтобы купить новые 💎")
+        show_subscription_info(message)
         return
         
     chat_id = message.chat.id
@@ -423,6 +639,7 @@ def process_plugin_request(message):
         if response.startswith('❌'):
             bot.delete_message(chat_id, processing_msg.message_id)
             bot.send_message(chat_id, response)
+            add_requests(user_id, 1, "Возврат при ошибке")
         else:
             description, code = parse_code_response(response)
             
@@ -431,15 +648,15 @@ def process_plugin_request(message):
             
             bot.delete_message(chat_id, processing_msg.message_id)
             bot.send_document(chat_id, file_buffer, 
-                             caption=f"🔌 Готовый плагин\n\n📝 Описание:\n{description}\n\n✅ Плагин готов к использованию!")
+                             caption=f"🔌 Готовый плагин\n\n📝 Описание:\n{description}\n\n💎 Осталось запросов: {new_balance}")
             user_states[chat_id] = 'main_menu'
             
-            # Добавляем статистику
-            add_stat(message.from_user.id, "plugin_generated")
+            add_stat(user_id, "plugin_generated")
         
     except Exception as e:
         bot.delete_message(chat_id, processing_msg.message_id)
         bot.send_message(chat_id, f"❌ Произошла ошибка при генерации плагина: {str(e)}")
+        add_requests(user_id, 1, "Возврат при ошибке")
 
 @bot.message_handler(content_types=['document'])
 def handle_document(message):
@@ -472,6 +689,14 @@ def process_modification_request(message):
         show_subscription_request(message)
         return
         
+    user_id = message.from_user.id
+    success, new_balance = use_request(user_id)
+    
+    if not success:
+        bot.send_message(message.chat.id, "❌ У вас закончились запросы! Нажмите на подписку чтобы купить новые 💎")
+        show_subscription_info(message)
+        return
+        
     chat_id = message.chat.id
     modification_request = message.text
     
@@ -499,6 +724,7 @@ def process_modification_request(message):
         if response.startswith('❌'):
             bot.delete_message(chat_id, processing_msg.message_id)
             bot.send_message(chat_id, response)
+            add_requests(user_id, 1, "Возврат при ошибке")
         else:
             description, modified_code = parse_code_response(response)
             
@@ -507,15 +733,15 @@ def process_modification_request(message):
             
             bot.delete_message(chat_id, processing_msg.message_id)
             bot.send_document(chat_id, file_buffer,
-                             caption=f"📁 Измененный код\n\n📝 Что было сделано:\n{description}\n\n✅ Файл готов к использованию!")
+                             caption=f"📁 Измененный код\n\n📝 Что было сделано:\n{description}\n\n💎 Осталось запросов: {new_balance}")
             user_states[chat_id] = 'main_menu'
             
-            # Добавляем статистику
-            add_stat(message.from_user.id, "code_modified")
+            add_stat(user_id, "code_modified")
         
     except Exception as e:
         bot.delete_message(chat_id, processing_msg.message_id)
         bot.send_message(chat_id, f"❌ Произошла ошибка при изменении кода: {str(e)}")
+        add_requests(user_id, 1, "Возврат при ошибке")
 
 @bot.message_handler(func=lambda message: True)
 def handle_other_messages(message):
