@@ -1,6 +1,5 @@
 import requests
 import json
-import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 import io
@@ -9,14 +8,10 @@ from flask import Flask, request
 
 # Конфигурация
 API_KEY = "AIzaSyARZYE8kSTBVlGF_A1jxFdEQdVi5-9MN38"
-BOT_TOKEN = "2201149182:AAG5kZQcl8AqMgbqqCGu4eiyik8AIFQA03Q"
-
-# Используем правильную модель
+BOT_TOKEN = "2201149182:AAG5kZQcl8AqMgbqqCGu4eiyik8AIFQA03Q/test"
 SELECTED_MODEL = "gemini-2.5-flash"
 
-# Хранилище состояний пользователей
 user_states = {}
-
 app = Flask(__name__)
 
 class GeminiChat:
@@ -113,6 +108,23 @@ def parse_code_response(response):
         
     except Exception as e:
         return f"❌ Ошибка при разборе ответа", response
+
+# Инициализация приложения
+application = Application.builder().token(BOT_TOKEN).build()
+
+@app.route('/')
+def home():
+    return "🤖 GeniAi Bot is running!"
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Обработчик веб-хука от Telegram"""
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = Update.de_json(json.loads(json_string), application.bot)
+        application.update_queue.put(update)
+        return 'OK'
+    return 'Error'
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
@@ -263,40 +275,19 @@ async def process_modification_request(update: Update, context: ContextTypes.DEF
         await context.bot.delete_message(chat_id, processing_msg.message_id)
         await update.message.reply_text(f"❌ Произошла ошибка при изменении кода: {str(e)}")
 
-# Создаем приложение
-application = Application.builder().token(BOT_TOKEN).build()
-
 # Добавляем обработчики
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CallbackQueryHandler(button_handler))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
-@app.route('/')
-def home():
-    return "🤖 GeniAi Bot is running!"
-
-@app.route('/webhook', methods=['POST'])
-async def webhook():
-    """Обработчик веб-хука от Telegram"""
-    if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = Update.de_json(json_string, application.bot)
-        await application.process_update(update)
-        return 'OK'
-    return 'Error'
-
-async def set_webhook():
-    """Устанавливаем веб-хук"""
-    webhook_url = "https://your-render-app-name.onrender.com/webhook"  # ЗАМЕНИ НА СВОЙ URL
-    await application.bot.set_webhook(webhook_url)
-    print(f"✅ Webhook установлен: {webhook_url}")
-
 if __name__ == "__main__":
-    # Запускаем установку веб-хука при старте
-    import asyncio
-    asyncio.run(set_webhook())
+    # Устанавливаем веб-хук
+    WEBHOOK_URL = "https://one2-1-04er.onrender.com/webhook"
+    application.bot.set_webhook(WEBHOOK_URL)
+    print(f"✅ Webhook установлен: {WEBHOOK_URL}")
     
-    # Запускаем Flask сервер на порту 10000 (Render сам назначает порт)
+    # Запускаем сервер
     port = int(os.environ.get('PORT', 10000))
+    print(f"🚀 Bot starting on port {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
