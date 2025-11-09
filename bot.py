@@ -9,6 +9,7 @@ import time
 from flask import Flask, request
 import sqlite3
 from datetime import datetime
+import base64
 
 # Конфигурация
 API_KEY = "AIzaSyARZYE8kSTBVlGF_A1jxFdEQdVi5-9MN38"
@@ -182,16 +183,16 @@ class GeminiChat:
         self.url = f"https://generativelanguage.googleapis.com/v1/models/{model}:generateContent?key={API_KEY}"
         self.headers = {'Content-Type': 'application/json'}
     
-    def process_in_parts(self, message, is_plugin=False):
+    def process_in_parts(self, message, is_plugin=False, image_data=None):
         parts = split_long_prompt(message)
         
         full_response = ""
         for i, part in enumerate(parts):
             try:
                 if is_plugin:
-                    response = self.send_message(part, is_code_request=False, is_plugin_request=True)
+                    response = self.send_message(part, is_code_request=False, is_plugin_request=True, image_data=image_data)
                 else:
-                    response = self.send_message(part, is_code_request=True)
+                    response = self.send_message(part, is_code_request=True, image_data=image_data)
                 
                 if response.startswith('❌'):
                     return response
@@ -203,9 +204,9 @@ class GeminiChat:
         
         return full_response
     
-    def send_message(self, message, is_code_request=True, is_plugin_request=False):
-        if len(message.split()) > 20:
-            return self.process_in_parts(message, is_plugin_request)
+    def send_message(self, message, is_code_request=True, is_plugin_request=False, image_data=None):
+        if len(message.split()) > 20 and not image_data:
+            return self.process_in_parts(message, is_plugin_request, image_data)
         
         if is_plugin_request:
             prompt = f"""
@@ -238,10 +239,19 @@ class GeminiChat:
         else:
             prompt = f"Улучши код: {message['code']}. Запрос: {message['request']}. Сохрани функциональность."
         
-        data = {"contents": [{"parts": [{"text": prompt}]}]}
+        # Подготовка содержимого с изображением если есть
+        contents = {"contents": [{"parts": [{"text": prompt}]}]}
+        
+        if image_data:
+            contents["contents"][0]["parts"].insert(0, {
+                "inline_data": {
+                    "mime_type": "image/jpeg",
+                    "data": image_data
+                }
+            })
         
         try:
-            response = requests.post(self.url, headers=self.headers, json=data, timeout=60)
+            response = requests.post(self.url, headers=self.headers, json=contents, timeout=60)
             
             if response.status_code == 200:
                 result = response.json()
@@ -281,6 +291,28 @@ def parse_code_response(response):
     except Exception as e:
         return "Ошибка при разборе ответа", response
 
+def process_image_message(message):
+    """Обработка сообщения с изображением и текстом"""
+    caption = message.caption if message.caption else ""
+    image_file = None
+    
+    if message.photo:
+        # Берем самое большое фото
+        file_id = message.photo[-1].file_id
+    elif message.document and message.document.mime_type.startswith('image/'):
+        file_id = message.document.file_id
+    else:
+        return caption, None
+    
+    try:
+        file_info = bot.get_file(file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        image_data = base64.b64encode(downloaded_file).decode('utf-8')
+        return caption, image_data
+    except Exception as e:
+        print(f"Ошибка обработки изображения: {e}")
+        return caption, None
+
 @app.route('/')
 def home():
     return "GeniAi Bot is running!"
@@ -312,33 +344,34 @@ def send_welcome(message):
 
 def show_subscription_request(message):
     markup = types.InlineKeyboardMarkup()
-    subscribe_btn = types.InlineKeyboardButton('Подписаться', url='https://t.me/GeniAi')
-    check_btn = types.InlineKeyboardButton('Проверить подписку', callback_data='check_subscription')
+    subscribe_btn = types.InlineKeyboardButton('📢 Подписаться', url='https://t.me/GeniAi')
+    check_btn = types.InlineKeyboardButton('✅ Проверить подписку', callback_data='check_subscription')
     markup.add(subscribe_btn)
     markup.add(check_btn)
-    text = "Подпишитесь на канал чтобы продолжить:\n\nhttps://t.me/GeniAi\n\nПосле подписки нажмите Проверить подписку"
+    text = "📢 Подпишитесь на канал чтобы продолжить:\n\nhttps://t.me/GeniAi\n\nПосле подписки нажмите ✅ Проверить подписку"
     bot.send_message(message.chat.id, text, reply_markup=markup)
 
 def show_main_menu(message):
     user_id = message.from_user.id
     balance = get_user_balance(user_id)
     markup = types.InlineKeyboardMarkup(row_width=1)
-    btn1 = types.InlineKeyboardButton('Написать код', callback_data='write_code')
-    btn2 = types.InlineKeyboardButton('Написать плагин', callback_data='write_plugin')
-    btn3 = types.InlineKeyboardButton('Изменить готовый', callback_data='modify_code')
-    btn4 = types.InlineKeyboardButton('Статистика', callback_data='stats')
-    btn5 = types.InlineKeyboardButton('Подписка', callback_data='subscription')
-    btn6 = types.InlineKeyboardButton('Автор бота', callback_data='author')
+    btn1 = types.InlineKeyboardButton('🧑‍💻 Написать код', callback_data='write_code')
+    btn2 = types.InlineKeyboardButton('🔌 Написать плагин', callback_data='write_plugin')
+    btn3 = types.InlineKeyboardButton('⚡ Изменить готовый', callback_data='modify_code')
+    btn4 = types.InlineKeyboardButton('📊 Статистика', callback_data='stats')
+    btn5 = types.InlineKeyboardButton('💎 Подписка', callback_data='subscription')
+    btn6 = types.InlineKeyboardButton('👨‍💻 Автор бота', callback_data='author')
     if message.from_user.id == ADMIN_ID:
-        btn7 = types.InlineKeyboardButton('Админ панель', callback_data='admin_panel')
+        btn7 = types.InlineKeyboardButton('👑 Админ панель', callback_data='admin_panel')
         markup.add(btn1, btn2, btn3, btn4, btn5, btn6, btn7)
     else:
         markup.add(btn1, btn2, btn3, btn4, btn5, btn6)
-    welcome_text = f"""Привет, я GeniAi!
+    welcome_text = f"""🤖 Привет, я GeniAi!
 Ваш помощник для создания Python кодов
 
-Баланс: {balance} запросов
-Можно описывать запросы подробно
+💰 Баланс: {balance} запросов
+📝 Можно описывать запросы подробно
+🖼️ Можно отправлять скриншоты с описанием
 
 Выберите действие:"""
     bot.send_message(message.chat.id, welcome_text, reply_markup=markup)
@@ -347,37 +380,37 @@ def show_main_menu(message):
 def show_subscription_info(message):
     user_id = message.from_user.id
     balance = get_user_balance(user_id)
-    text = f"""Информация о подписке
+    text = f"""💎 Информация о подписке
 
-У вас {balance} запросов
+💰 У вас {balance} запросов
 
-Купить запросы: @xostcodingkrytoy
+🛒 Купить запросы: @xostcodingkrytoy
 
-Для покупки отправьте админу:
+📋 Для покупки отправьте админу:
 - Ваш ID: {user_id}
 - Количество запросов
 - Скриншот оплаты
 
-1 запрос = 2 торта"""
+💳 1 запрос = 2 торта"""
     markup = types.InlineKeyboardMarkup()
-    buy_btn = types.InlineKeyboardButton('Купить запросы', url='https://t.me/xostcodingkrytoy')
-    back_btn = types.InlineKeyboardButton('Назад', callback_data='back_to_menu')
+    buy_btn = types.InlineKeyboardButton('🛒 Купить запросы', url='https://t.me/xostcodingkrytoy')
+    back_btn = types.InlineKeyboardButton('🔙 Назад', callback_data='back_to_menu')
     markup.add(buy_btn)
     markup.add(back_btn)
     bot.send_message(message.chat.id, text, reply_markup=markup)
 
 def show_admin_panel(message):
     stats = get_stats()
-    text = f"""Админ панель
+    text = f"""👑 Админ панель
 
-Статистика:
-Пользователей: {stats['total_users']}
-Кодов создано: {stats['codes_generated']}
-Плагинов создано: {stats['plugins_generated']}
-Кодов изменено: {stats['codes_modified']}
-Всего запросов: {stats['total_requests']}
+📊 Статистика:
+👥 Пользователей: {stats['total_users']}
+💻 Кодов создано: {stats['codes_generated']}
+🔌 Плагинов создано: {stats['plugins_generated']}
+⚡ Кодов изменено: {stats['codes_modified']}
+📈 Всего запросов: {stats['total_requests']}
 
-Команды:
+⚙️ Команды:
 /request [id] [количество] - выдать запросы
 /users - список пользователей"""
     bot.send_message(message.chat.id, text)
@@ -392,14 +425,14 @@ def handle_request_command(message):
         amount = int(amount)
         new_balance = add_requests(user_id, amount, "Выдача админом", ADMIN_ID)
         try:
-            user_message = f"""Спасибо за покупку!
-Вам выдано {amount} запросов
-Текущий баланс: {new_balance} запросов"""
+            user_message = f"""🎉 Спасибо за покупку!
+📦 Вам выдано {amount} запросов
+💰 Текущий баланс: {new_balance} запросов"""
             bot.send_message(user_id, user_message)
         except: pass
-        bot.send_message(message.chat.id, f"Пользователю {user_id} выдано {amount} запросов. Новый баланс: {new_balance}")
+        bot.send_message(message.chat.id, f"✅ Пользователю {user_id} выдано {amount} запросов. Новый баланс: {new_balance}")
     except ValueError:
-        bot.send_message(message.chat.id, "Неправильный формат. Используйте: /request [id] [количество]")
+        bot.send_message(message.chat.id, "❌ Неправильный формат. Используйте: /request [id] [количество]")
 
 @bot.message_handler(commands=['users'])
 def handle_users_command(message):
@@ -411,13 +444,13 @@ def handle_users_command(message):
     users = cursor.fetchall()
     conn.close()
     if not users:
-        bot.send_message(message.chat.id, "Пользователей нет")
+        bot.send_message(message.chat.id, "❌ Пользователей нет")
         return
-    text = "Последние 10 пользователей:\n\n"
+    text = "👥 Последние 10 пользователей:\n\n"
     for user in users:
         user_id, username, first_name, balance = user
         user_info = f"@{username}" if username else first_name
-        text += f"ID {user_id} | {user_info} | {balance}\n"
+        text += f"🆔 {user_id} | 👤 {user_info} | 💰 {balance}\n"
     bot.send_message(message.chat.id, text)
 
 @bot.callback_query_handler(func=lambda call: True)
@@ -427,80 +460,104 @@ def handle_callback(call):
     if call.data == 'check_subscription':
         if check_subscription(user_id):
             update_subscription(user_id, 1)
-            bot.answer_callback_query(call.id, "Спасибо за подписку!")
+            bot.answer_callback_query(call.id, "✅ Спасибо за подписку!")
             show_main_menu(call.message)
         else:
-            bot.answer_callback_query(call.id, "Вы еще не подписались на канал!")
+            bot.answer_callback_query(call.id, "❌ Вы еще не подписались на канал!")
     elif check_subscription(user_id):
         if call.data == 'write_code':
             balance = get_user_balance(user_id)
             if balance <= 0:
-                bot.answer_callback_query(call.id, "У вас закончились запросы!")
+                bot.answer_callback_query(call.id, "❌ У вас закончились запросы!")
                 show_subscription_info(call.message)
             else:
-                msg = bot.send_message(chat_id, "Опишите какой код нужен:\n\nПример: 'калькулятор на Python с GUI'")
-                bot.register_next_step_handler(msg, process_code_request)
+                msg = bot.send_message(chat_id, "🧑‍💻 Опишите какой код нужен (можно отправить скриншот с подписью):\n\n💡 Пример: 'калькулятор на Python с GUI'")
                 user_states[chat_id] = 'waiting_code_request'
         elif call.data == 'write_plugin':
             balance = get_user_balance(user_id)
             if balance <= 0:
-                bot.answer_callback_query(call.id, "У вас закончились запросы!")
+                bot.answer_callback_query(call.id, "❌ У вас закончились запросы!")
                 show_subscription_info(call.message)
             else:
-                msg = bot.send_message(chat_id, "Опишите какой плагин нужен:\n\nПример: 'плагин для смены аватарки в Telegram'")
-                bot.register_next_step_handler(msg, process_plugin_request)
+                msg = bot.send_message(chat_id, "🔌 Опишите какой плагин нужен (можно отправить скриншот с подписью):\n\n💡 Пример: 'плагин для смены аватарки в Telegram'")
                 user_states[chat_id] = 'waiting_plugin_request'
         elif call.data == 'modify_code':
             balance = get_user_balance(user_id)
             if balance <= 0:
-                bot.answer_callback_query(call.id, "У вас закончились запросы!")
+                bot.answer_callback_query(call.id, "❌ У вас закончились запросы!")
                 show_subscription_info(call.message)
             else:
-                msg = bot.send_message(chat_id, "Отправьте .py файл для изменения\n\nМожно описывать изменения подробно")
+                msg = bot.send_message(chat_id, "⚡ Отправьте .py файл для изменения (можно с описанием изменений в подписи)\n\n💡 Можно описывать изменения подробно")
                 user_states[chat_id] = 'waiting_code_file'
         elif call.data == 'stats':
             stats = get_stats()
             user_balance = get_user_balance(user_id)
-            stats_text = f"""Статистика бота:
+            stats_text = f"""📊 Статистика бота:
 
-Всего пользователей: {stats['total_users']}
-Создано кодов: {stats['codes_generated']}
-Создано плагинов: {stats['plugins_generated']}
-Изменено кодов: {stats['codes_modified']}
-Ваш баланс: {user_balance} запросов"""
+👥 Всего пользователей: {stats['total_users']}
+💻 Создано кодов: {stats['codes_generated']}
+🔌 Создано плагинов: {stats['plugins_generated']}
+⚡ Изменено кодов: {stats['codes_modified']}
+💰 Ваш баланс: {user_balance} запросов"""
             bot.send_message(chat_id, stats_text)
         elif call.data == 'subscription':
             show_subscription_info(call.message)
         elif call.data == 'author':
-            bot.send_message(chat_id, "Автор бота: @xostcodingkrytoy")
+            bot.send_message(chat_id, "👨‍💻 Автор бота: @xostcodingkrytoy")
         elif call.data == 'admin_panel':
             if user_id == ADMIN_ID:
                 show_admin_panel(call.message)
         elif call.data == 'back_to_menu':
             show_main_menu(call.message)
     else:
-        bot.answer_callback_query(call.id, "Сначала подпишитесь на канал!")
+        bot.answer_callback_query(call.id, "❌ Сначала подпишитесь на канал!")
         show_subscription_request(call.message)
 
-def process_code_request(message):
+@bot.message_handler(content_types=['photo', 'text'])
+def handle_code_requests(message):
     if not check_subscription(message.from_user.id):
         show_subscription_request(message)
         return
+        
+    chat_id = message.chat.id
+    state = user_states.get(chat_id)
+    
+    if state == 'waiting_code_request':
+        process_code_request_with_image(message)
+    elif state == 'waiting_plugin_request':
+        process_plugin_request_with_image(message)
+    elif state == 'waiting_modification_request':
+        process_modification_request_with_image(message)
+
+def process_code_request_with_image(message):
+    if not check_subscription(message.from_user.id):
+        show_subscription_request(message)
+        return
+        
     user_id = message.from_user.id
     success, new_balance = use_request(user_id)
     if not success:
-        bot.send_message(message.chat.id, "У вас закончились запросы! Нажмите на подписку чтобы купить новые")
+        bot.send_message(message.chat.id, "❌ У вас закончились запросы! Нажмите на подписку чтобы купить новые")
         show_subscription_info(message)
         return
+        
     chat_id = message.chat.id
-    user_request = message.text
+    
+    # Получаем текст и изображение
+    user_request, image_data = process_image_message(message)
+    
+    if not user_request:
+        bot.send_message(chat_id, "❌ Пожалуйста, добавьте описание к запросу")
+        return
+        
     if user_request.startswith('/'):
         show_main_menu(message)
         return
-    processing_msg = bot.send_message(chat_id, "Код готовится...")
+        
+    processing_msg = bot.send_message(chat_id, "⏳ Код готовится...")
     try:
         gemini = GeminiChat()
-        response = gemini.send_message(user_request, is_code_request=True)
+        response = gemini.send_message(user_request, is_code_request=True, image_data=image_data)
         if response.startswith('❌'):
             bot.delete_message(chat_id, processing_msg.message_id)
             bot.send_message(chat_id, response)
@@ -511,7 +568,7 @@ def process_code_request(message):
             file_buffer.name = "generated_code.py"
             bot.delete_message(chat_id, processing_msg.message_id)
             bot.send_document(chat_id, file_buffer, 
-                             caption=f"Готовый код\n\nОписание:\n{description}\n\nОсталось запросов: {new_balance}")
+                             caption=f"✅ Готовый код\n\n📝 Описание:\n{description}\n\n💰 Осталось запросов: {new_balance}")
             user_states[chat_id] = 'main_menu'
             add_stat(user_id, "code_generated")
     except Exception as e:
@@ -519,25 +576,35 @@ def process_code_request(message):
         bot.send_message(chat_id, f"❌ Извините, бот не смог обработать запрос, попытайтесь уменьшить промт, либо попробовать заново")
         add_requests(user_id, 1, "Возврат при ошибке")
 
-def process_plugin_request(message):
+def process_plugin_request_with_image(message):
     if not check_subscription(message.from_user.id):
         show_subscription_request(message)
         return
+        
     user_id = message.from_user.id
     success, new_balance = use_request(user_id)
     if not success:
-        bot.send_message(message.chat.id, "У вас закончились запросы! Нажмите на подписку чтобы купить новые")
+        bot.send_message(message.chat.id, "❌ У вас закончились запросы! Нажмите на подписку чтобы купить новые")
         show_subscription_info(message)
         return
+        
     chat_id = message.chat.id
-    user_request = message.text
+    
+    # Получаем текст и изображение
+    user_request, image_data = process_image_message(message)
+    
+    if not user_request:
+        bot.send_message(chat_id, "❌ Пожалуйста, добавьте описание к запросу")
+        return
+        
     if user_request.startswith('/'):
         show_main_menu(message)
         return
-    processing_msg = bot.send_message(chat_id, "Плагин готовится...")
+        
+    processing_msg = bot.send_message(chat_id, "⏳ Плагин готовится...")
     try:
         gemini = GeminiChat()
-        response = gemini.send_message(user_request, is_code_request=False, is_plugin_request=True)
+        response = gemini.send_message(user_request, is_code_request=False, is_plugin_request=True, image_data=image_data)
         if response.startswith('❌'):
             bot.delete_message(chat_id, processing_msg.message_id)
             bot.send_message(chat_id, response)
@@ -548,7 +615,7 @@ def process_plugin_request(message):
             file_buffer.name = "generated_plugin.plugin"
             bot.delete_message(chat_id, processing_msg.message_id)
             bot.send_document(chat_id, file_buffer, 
-                             caption=f"Готовый плагин\n\nОписание:\n{description}\n\nОсталось запросов: {new_balance}")
+                             caption=f"✅ Готовый плагин\n\n📝 Описание:\n{description}\n\n💰 Осталось запросов: {new_balance}")
             user_states[chat_id] = 'main_menu'
             add_stat(user_id, "plugin_generated")
     except Exception as e:
@@ -569,40 +636,51 @@ def handle_document(message):
                 downloaded_file = bot.download_file(file_info.file_path)
                 code_content = downloaded_file.decode('utf-8')
                 user_states[chat_id] = {'state': 'waiting_modification_request', 'code': code_content}
-                msg = bot.send_message(chat_id, "Что изменить в коде?\n\nПример: 'добавь обработку ошибок и логирование'")
-                bot.register_next_step_handler(msg, process_modification_request)
+                
+                # Если есть подпись к файлу, используем ее как запрос на изменение
+                if message.caption:
+                    process_modification_request_with_image(message)
+                else:
+                    msg = bot.send_message(chat_id, "⚡ Что изменить в коде? (можно отправить скриншот с подписью):\n\n💡 Пример: 'добавь обработку ошибок и логирование'")
             except Exception as e:
-                bot.send_message(chat_id, f"Ошибка при чтении файла: {str(e)}")
+                bot.send_message(chat_id, f"❌ Ошибка при чтении файла: {str(e)}")
         else:
-            bot.send_message(chat_id, "Пожалуйста, отправьте именно Python файл (.py)")
+            bot.send_message(chat_id, "❌ Пожалуйста, отправьте именно Python файл (.py)")
     else:
-        bot.send_message(chat_id, "Сначала нажмите 'Изменить готовый'")
+        bot.send_message(chat_id, "❌ Сначала нажмите '⚡ Изменить готовый'")
 
-def process_modification_request(message):
+def process_modification_request_with_image(message):
     if not check_subscription(message.from_user.id):
         show_subscription_request(message)
         return
+        
     user_id = message.from_user.id
     success, new_balance = use_request(user_id)
     if not success:
-        bot.send_message(message.chat.id, "У вас закончились запросы! Нажмите на подписку чтобы купить новые")
+        bot.send_message(message.chat.id, "❌ У вас закончились запросы! Нажмите на подписку чтобы купить новые")
         show_subscription_info(message)
         return
+        
     chat_id = message.chat.id
-    modification_request = message.text
-    if modification_request.startswith('/'):
-        show_main_menu(message)
+    
+    # Получаем текст и изображение
+    modification_request, image_data = process_image_message(message)
+    
+    if not modification_request:
+        bot.send_message(chat_id, "❌ Пожалуйста, добавьте описание изменений")
         return
+        
     user_data = user_states.get(chat_id, {})
     original_code = user_data.get('code', '')
     if not original_code:
-        bot.send_message(chat_id, "Не удалось найти исходный код. Попробуйте снова.")
+        bot.send_message(chat_id, "❌ Не удалось найти исходный код. Попробуйте снова.")
         return
-    processing_msg = bot.send_message(chat_id, "Вносятся изменения...")
+        
+    processing_msg = bot.send_message(chat_id, "⏳ Вносятся изменения...")
     try:
         gemini = GeminiChat()
         request_data = {'code': original_code, 'request': modification_request}
-        response = gemini.send_message(request_data, is_code_request=False)
+        response = gemini.send_message(request_data, is_code_request=False, image_data=image_data)
         if response.startswith('❌'):
             bot.delete_message(chat_id, processing_msg.message_id)
             bot.send_message(chat_id, response)
@@ -613,7 +691,7 @@ def process_modification_request(message):
             file_buffer.name = "modified_code.py"
             bot.delete_message(chat_id, processing_msg.message_id)
             bot.send_document(chat_id, file_buffer,
-                             caption=f"Измененный код\n\nЧто сделано:\n{description}\n\nОсталось запросов: {new_balance}")
+                             caption=f"✅ Измененный код\n\n📝 Что сделано:\n{description}\n\n💰 Осталось запросов: {new_balance}")
             user_states[chat_id] = 'main_menu'
             add_stat(user_id, "code_modified")
     except Exception as e:
