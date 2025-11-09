@@ -274,7 +274,7 @@ class GeminiChat:
                 return f"❌ Ошибка API ({response.status_code}): {error_msg}"
                 
         except requests.exceptions.Timeout:
-            return "❌ Таймаут при запросе к API"
+            return "❌ Извините, бот не смог обработать запрос, попытайтесь уменшить промт, либо попробовать заново"
         except Exception as e:
             return f"❌ Ошибка соединения: {str(e)}"
 
