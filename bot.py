@@ -13,7 +13,7 @@ from datetime import datetime
 # Конфигурация
 API_KEY = "AIzaSyB5goqEKTAWUedBYDL1mPxgTiBSGhuAlbM"
 BOT_TOKEN = "2201851225:AAEruvQjAyxiYIcsVCwa-JoIcWaXMx4kqE8/test"
-SELECTED_MODEL = "gemini-1.5-pro"
+SELECTED_MODEL = "gemini-pro"
 CHANNEL_USERNAME = "@GeniAi"
 ADMIN_ID = 2202291197  # Твой ID
 
