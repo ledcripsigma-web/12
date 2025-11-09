@@ -1,24 +1,37 @@
 import requests
 import json
-import telebot
-from telebot import types
+import asyncio
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 import io
 import os
+import threading
+import time
 
 # Конфигурация
 API_KEY = "AIzaSyARZYE8kSTBVlGF_A1jxFdEQdVi5-9MN38"
-BOT_TOKEN = "2201149182:AAG5kZQcl8AqMgbqqCGu4eiyik8AIFQA03Q/test"
-
-# Настройка прокси для Telegram
-PROXY = {
-    'https': 'https://138.68.161.14:3128',  # Рабочий прокси сервер
-}
-
-# Создаем бота с прокси
-bot = telebot.TeleBot(BOT_TOKEN)
+BOT_TOKEN = "2201149182:AAG5kZQcl8AqMgbqqCGu4eiyik8AIFQA03Q"
 
 # Используем правильную модель
 SELECTED_MODEL = "gemini-2.5-flash"
+
+# Хранилище состояний пользователей
+user_states = {}
+
+# Keep-alive функция
+def keep_alive():
+    """Функция для поддержания бота активным"""
+    while True:
+        try:
+            # Отправляем запрос к самому себе
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/getMe"
+            response = requests.get(url, timeout=10)
+            print(f"✅ Keep-alive запрос отправлен: {response.status_code}")
+        except Exception as e:
+            print(f"❌ Ошибка keep-alive: {e}")
+        
+        # Ждем 4 минуты (240 секунд)
+        time.sleep(240)
 
 class GeminiChat:
     def __init__(self, model=SELECTED_MODEL):
@@ -70,7 +83,6 @@ class GeminiChat:
         }
         
         try:
-            # Для Gemini API не используем прокси (он доступен в России)
             response = requests.post(self.url, headers=self.headers, json=data, timeout=30)
             
             if response.status_code == 200:
@@ -91,7 +103,6 @@ class GeminiChat:
 
 def parse_code_response(response):
     try:
-        # Пробуем разные форматы ответа
         if 'Описание:' in response and 'Код:' in response:
             parts = response.split('Код:')
             description = parts[0].replace('Описание:', '').strip()
@@ -112,21 +123,18 @@ def parse_code_response(response):
                 description = parts[0].strip() if parts[0].strip() else "📝 Сгенерированный Python код"
                 return description, code
         
-        # Если не нашли структурированный ответ, возвращаем весь текст как код
         return "📝 Сгенерированный Python код", response
         
     except Exception as e:
         return f"❌ Ошибка при разборе ответа", response
 
-user_states = {}
-
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    markup = types.InlineKeyboardMarkup(row_width=1)
-    btn1 = types.InlineKeyboardButton('📝 Написать код', callback_data='write_code')
-    btn2 = types.InlineKeyboardButton('🔧 Изменить готовый', callback_data='modify_code')
-    btn3 = types.InlineKeyboardButton('👨‍💻 Автор бота', callback_data='author')
-    markup.add(btn1, btn2, btn3)
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("📝 Написать код", callback_data="write_code")],
+        [InlineKeyboardButton("🔧 Изменить готовый", callback_data="modify_code")],
+        [InlineKeyboardButton("👨‍💻 Автор бота", callback_data="author")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
     
     welcome_text = f"""🤖 Привет, я GeniAi!
 Ваш помощник для создания Python кодов
@@ -134,95 +142,112 @@ def send_welcome(message):
 
 Просто выберите, с чего начнём:"""
     
-    bot.send_message(message.chat.id, welcome_text, reply_markup=markup)
-    user_states[message.chat.id] = 'main_menu'
+    await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+    user_states[update.effective_chat.id] = 'main_menu'
 
-@bot.callback_query_handler(func=lambda call: True)
-def handle_callback(call):
-    chat_id = call.message.chat.id
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
     
-    if call.data == 'write_code':
-        msg = bot.send_message(chat_id, "💡 Опишите, какой код вам нужен:")
-        bot.register_next_step_handler(msg, process_code_request)
+    if query.data == 'write_code':
+        await query.edit_message_text("💡 Опишите, какой код вам нужен:")
         user_states[chat_id] = 'waiting_code_request'
         
-    elif call.data == 'modify_code':
-        msg = bot.send_message(chat_id, "📎 Отправьте ваш .py файл, который нужно изменить")
+    elif query.data == 'modify_code':
+        await query.edit_message_text("📎 Отправьте ваш .py файл, который нужно изменить")
         user_states[chat_id] = 'waiting_code_file'
         
-    elif call.data == 'author':
-        bot.send_message(chat_id, "👨‍💻 Автор бота: @xostcodingkrytoy")
+    elif query.data == 'author':
+        await query.edit_message_text("👨‍💻 Автор бота: @xostcodingkrytoy")
 
-def process_code_request(message):
-    chat_id = message.chat.id
-    user_request = message.text
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user_text = update.message.text
+    
+    if user_states.get(chat_id) == 'waiting_code_request':
+        await process_code_request(update, context, user_text)
+    elif user_states.get(chat_id, {}).get('state') == 'waiting_modification_request':
+        await process_modification_request(update, context, user_text)
+    else:
+        # Показываем меню
+        keyboard = [
+            [InlineKeyboardButton("📝 Написать код", callback_data="write_code")],
+            [InlineKeyboardButton("🔧 Изменить готовый", callback_data="modify_code")],
+            [InlineKeyboardButton("👨‍💻 Автор бота", callback_data="author")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text("🤖 Выберите действие:", reply_markup=reply_markup)
+
+async def process_code_request(update: Update, context: ContextTypes.DEFAULT_TYPE, user_request: str):
+    chat_id = update.effective_chat.id
     
     if user_request.startswith('/'):
-        send_welcome(message)
+        await start(update, context)
         return
     
-    processing_msg = bot.send_message(chat_id, "⚙️ Код готовится... Это может занять несколько секунд")
+    processing_msg = await update.message.reply_text("⚙️ Код готовится... Это может занять несколько секунд")
     
     try:
         gemini = GeminiChat()
         response = gemini.send_message(user_request, is_code_request=True)
         
         if response.startswith('❌'):
-            bot.delete_message(chat_id, processing_msg.message_id)
-            bot.send_message(chat_id, response)
+            await context.bot.delete_message(chat_id, processing_msg.message_id)
+            await update.message.reply_text(response)
         else:
             description, code = parse_code_response(response)
             
             file_buffer = io.BytesIO(code.encode('utf-8'))
-            file_buffer.name = f"generated_code.py"
+            file_buffer.name = "generated_code.py"
             
-            bot.delete_message(chat_id, processing_msg.message_id)
-            bot.send_document(chat_id, file_buffer, 
-                             caption=f"📁 Готовый код\n\n📝 Описание:\n{description}\n\n✅ Файл готов к использованию!")
+            await context.bot.delete_message(chat_id, processing_msg.message_id)
+            await update.message.reply_document(
+                document=InputFile(file_buffer, filename="generated_code.py"),
+                caption=f"📁 Готовый код\n\n📝 Описание:\n{description}\n\n✅ Файл готов к использованию!"
+            )
+            user_states[chat_id] = 'main_menu'
         
     except Exception as e:
-        bot.delete_message(chat_id, processing_msg.message_id)
-        bot.send_message(chat_id, f"❌ Произошла ошибка при генерации кода: {str(e)}")
+        await context.bot.delete_message(chat_id, processing_msg.message_id)
+        await update.message.reply_text(f"❌ Произошла ошибка при генерации кода: {str(e)}")
 
-@bot.message_handler(content_types=['document'])
-def handle_document(message):
-    chat_id = message.chat.id
+async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
     
     if user_states.get(chat_id) == 'waiting_code_file':
-        if message.document.file_name and message.document.file_name.endswith('.py'):
+        document = update.message.document
+        if document.file_name.endswith('.py'):
             try:
-                file_info = bot.get_file(message.document.file_id)
-                downloaded_file = bot.download_file(file_info.file_path)
-                
-                code_content = downloaded_file.decode('utf-8')
+                file = await context.bot.get_file(document.file_id)
+                file_content = await file.download_as_bytearray()
+                code_content = file_content.decode('utf-8')
                 
                 user_states[chat_id] = {'state': 'waiting_modification_request', 'code': code_content}
-                msg = bot.send_message(chat_id, "✏️ Что вы хотите изменить в коде?")
-                bot.register_next_step_handler(msg, process_modification_request)
+                await update.message.reply_text("✏️ Что вы хотите изменить в коде?")
                 
             except Exception as e:
-                bot.send_message(chat_id, f"❌ Ошибка при чтении файла: {str(e)}")
+                await update.message.reply_text(f"❌ Ошибка при чтении файла: {str(e)}")
         else:
-            bot.send_message(chat_id, "❌ Пожалуйста, отправьте именно Python файл (.py)")
+            await update.message.reply_text("❌ Пожалуйста, отправьте именно Python файл (.py)")
     else:
-        bot.send_message(chat_id, "❌ Сначала нажмите 'Изменить готовый'")
+        await update.message.reply_text("❌ Сначала нажмите 'Изменить готовый'")
 
-def process_modification_request(message):
-    chat_id = message.chat.id
-    modification_request = message.text
+async def process_modification_request(update: Update, context: ContextTypes.DEFAULT_TYPE, modification_request: str):
+    chat_id = update.effective_chat.id
     
     if modification_request.startswith('/'):
-        send_welcome(message)
+        await start(update, context)
         return
     
     user_data = user_states.get(chat_id, {})
     original_code = user_data.get('code', '')
     
     if not original_code:
-        bot.send_message(chat_id, "❌ Не удалось найти исходный код. Попробуйте снова.")
+        await update.message.reply_text("❌ Не удалось найти исходный код. Попробуйте снова.")
         return
     
-    processing_msg = bot.send_message(chat_id, "⚙️ Вносятся изменения в код...")
+    processing_msg = await update.message.reply_text("⚙️ Вносятся изменения в код...")
     
     try:
         gemini = GeminiChat()
@@ -233,57 +258,51 @@ def process_modification_request(message):
         response = gemini.send_message(request_data, is_code_request=False)
         
         if response.startswith('❌'):
-            bot.delete_message(chat_id, processing_msg.message_id)
-            bot.send_message(chat_id, response)
+            await context.bot.delete_message(chat_id, processing_msg.message_id)
+            await update.message.reply_text(response)
         else:
             description, modified_code = parse_code_response(response)
             
             file_buffer = io.BytesIO(modified_code.encode('utf-8'))
-            file_buffer.name = f"modified_code.py"
+            file_buffer.name = "modified_code.py"
             
-            bot.delete_message(chat_id, processing_msg.message_id)
-            bot.send_document(chat_id, file_buffer,
-                             caption=f"📁 Измененный код\n\n📝 Что было сделано:\n{description}\n\n✅ Файл готов к использованию!")
+            await context.bot.delete_message(chat_id, processing_msg.message_id)
+            await update.message.reply_document(
+                document=InputFile(file_buffer, filename="modified_code.py"),
+                caption=f"📁 Измененный код\n\n📝 Что было сделано:\n{description}\n\n✅ Файл готов к использованию!"
+            )
             
             user_states[chat_id] = 'main_menu'
         
     except Exception as e:
-        bot.delete_message(chat_id, processing_msg.message_id)
-        bot.send_message(chat_id, f"❌ Произошла ошибка при изменении кода: {str(e)}")
+        await context.bot.delete_message(chat_id, processing_msg.message_id)
+        await update.message.reply_text(f"❌ Произошла ошибка при изменении кода: {str(e)}")
 
-@bot.message_handler(func=lambda message: True)
-def handle_other_messages(message):
-    chat_id = message.chat.id
+def start_keep_alive():
+    """Запускает keep-alive в отдельном потоке"""
+    keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
+    keep_alive_thread.start()
+    print("🔄 Keep-alive запущен (запросы каждые 4 минуты)")
+
+def main():
+    # Запускаем keep-alive
+    start_keep_alive()
     
-    if user_states.get(chat_id) not in ['waiting_code_request', 'waiting_code_file', 'waiting_modification_request']:
-        markup = types.InlineKeyboardMarkup(row_width=1)
-        btn1 = types.InlineKeyboardButton('📝 Написать код', callback_data='write_code')
-        btn2 = types.InlineKeyboardButton('🔧 Изменить готовый', callback_data='modify_code')
-        btn3 = types.InlineKeyboardButton('👨‍💻 Автор бота', callback_data='author')
-        markup.add(btn1, btn2, btn3)
-        
-        bot.send_message(chat_id, "🤖 Выберите действие:", reply_markup=markup)
+    # Создаем приложение
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Добавляем обработчики
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    
+    print(f"🤖 Бот запущен... Используется модель: {SELECTED_MODEL}")
+    print("🔗 Бот работает на хостинге за пределами РФ")
+    print("🔄 Keep-alive активен - бот не будет выключаться")
+    
+    # Запускаем бота
+    application.run_polling()
 
 if __name__ == "__main__":
-    print(f"🤖 Бот запущен... Используется модель: {SELECTED_MODEL}")
-    
-    # Пробуем разные способы обхода блокировки
-    try:
-        # Способ 1: Обычный запуск
-        bot.infinity_polling()
-    except Exception as e:
-        print(f"❌ Ошибка подключения: {e}")
-        print("🔄 Пробуем использовать прокси...")
-        
-        # Способ 2: С прокси
-        try:
-            from telebot import apihelper
-            # Устанавливаем прокси для Telegram API
-            apihelper.proxy = PROXY
-            bot.infinity_polling()
-        except Exception as e2:
-            print(f"❌ Ошибка с прокси: {e2}")
-            print("💡 Рекомендации:")
-            print("1. Используйте VPN")
-            print("2. Или запустите бота на хостинге за пределами РФ")
-            print("3. Или используйте Telegram Web версию")
+    main()
