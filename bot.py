@@ -394,7 +394,7 @@ def handle_callback(call):
                 bot.answer_callback_query(call.id, "❌ У вас закончились запросы!")
                 show_subscription_info(call.message)
             else:
-                msg = bot.send_message(chat_id, "📎 Отправьте .py файл для изменения\n\n💡 Можно изменять код по частям\n⚠️  Описывайте изменения коротко")
+                msg = bot.send_message(chat_id, "📎 Отправьте .py файл для изменения\n\n💡 Можно изменять код по частям\n")
                 user_states[chat_id] = 'waiting_code_file'
         elif call.data == 'stats':
             stats = get_stats()
