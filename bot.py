@@ -95,19 +95,20 @@ def get_user_balance(user_id):
     result = cursor.fetchone()
     conn.close()
     return result[0] if result else 0
-    
-def add_stat(user_id, action_type):
+
+def update_user_balance(user_id, new_balance):
     conn = sqlite3.connect('bot_stats.db')
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT INTO stats (user_id, action_type) VALUES (?, ?)
-    ''', (user_id, action_type))
+        UPDATE users SET requests_balance = ? WHERE user_id = ?
+    ''', (new_balance, user_id))
     conn.commit()
     conn.close()
 
 def add_requests(user_id, amount, reason, admin_id=None):
     current_balance = get_user_balance(user_id)
     new_balance = current_balance + amount
+    
     conn = sqlite3.connect('bot_stats.db')
     cursor = conn.cursor()
     cursor.execute('UPDATE users SET requests_balance = ? WHERE user_id = ?', (new_balance, user_id))
@@ -135,6 +136,18 @@ def add_stat(user_id, action_type):
     ''', (user_id, action_type))
     conn.commit()
     conn.close()
+
+def split_long_prompt(prompt, max_words=20):
+    """Разделяет длинный промт на части по 20 слов"""
+    words = prompt.split()
+    if len(words) <= max_words:
+        return [prompt]
+    
+    parts = []
+    for i in range(0, len(words), max_words):
+        part = ' '.join(words[i:i + max_words])
+        parts.append(part)
+    return parts
 
 def get_stats():
     conn = sqlite3.connect('bot_stats.db')
@@ -170,7 +183,33 @@ class GeminiChat:
         self.url = f"https://generativelanguage.googleapis.com/v1/models/{model}:generateContent?key={API_KEY}"
         self.headers = {'Content-Type': 'application/json'}
     
+    def process_in_parts(self, message, is_plugin=False):
+        """Обрабатывает длинный промт по частям"""
+        parts = split_long_prompt(message)
+        
+        full_response = ""
+        for i, part in enumerate(parts):
+            try:
+                if is_plugin:
+                    response = self.send_message(part, is_code_request=False, is_plugin_request=True)
+                else:
+                    response = self.send_message(part, is_code_request=True)
+                
+                if response.startswith('❌'):
+                    return response
+                
+                full_response += response + "\n\n"
+                
+            except Exception as e:
+                return f"❌ Ошибка при обработке части {i+1}: {str(e)}"
+        
+        return full_response
+    
     def send_message(self, message, is_code_request=True, is_plugin_request=False):
+        # Сначала проверяем длину промта
+        if len(message.split()) > 20:
+            return self.process_in_parts(message, is_plugin_request)
+        
         if is_plugin_request:
             prompt = f"Создай Python плагин для: {message}. Формат: класс BasePlugin, методы on_plugin_load, create_settings. Метаданные: __id__, __name__, __description__"
         elif is_code_request:
@@ -181,7 +220,7 @@ class GeminiChat:
         data = {"contents": [{"parts": [{"text": prompt}]}]}
         
         try:
-            response = requests.post(self.url, headers=self.headers, json=data, timeout=30)
+            response = requests.post(self.url, headers=self.headers, json=data, timeout=60)
             if response.status_code == 200:
                 result = response.json()
                 if 'candidates' in result and result['candidates']:
@@ -274,8 +313,7 @@ def show_main_menu(message):
 Ваш помощник для создания Python кодов
 
 💎 Баланс: {balance} запросов
-⚠️  Промты больше 20+ слов не работают!
-💡 Сложные задачи можно делать по частям
+💡 Можно описывать запросы подробно
 
 Выберите действие:"""
     bot.send_message(message.chat.id, welcome_text, reply_markup=markup)
@@ -286,7 +324,7 @@ def show_subscription_info(message):
     balance = get_user_balance(user_id)
     text = f"""💎 **Информация о подписке**
 
-У вас {balance} запросов 🧑‍💻
+У вас **{balance} запросов** 🧑‍💻
 
 💳 Купить запросы: @xostcodingkrytoy
 
@@ -375,7 +413,7 @@ def handle_callback(call):
                 bot.answer_callback_query(call.id, "❌ У вас закончились запросы!")
                 show_subscription_info(call.message)
             else:
-                msg = bot.send_message(chat_id, "💡 Опишите какой код нужен:\n\n⚠️  Промт должен быть коротким (до 20 слов)\n")
+                msg = bot.send_message(chat_id, "💡 Опишите какой код нужен:\n\n💡 Пример: 'калькулятор на Python с GUI'")
                 bot.register_next_step_handler(msg, process_code_request)
                 user_states[chat_id] = 'waiting_code_request'
         elif call.data == 'write_plugin':
@@ -384,7 +422,7 @@ def handle_callback(call):
                 bot.answer_callback_query(call.id, "❌ У вас закончились запросы!")
                 show_subscription_info(call.message)
             else:
-                msg = bot.send_message(chat_id, "🔌 Опишите какой плагин нужен:\n\n⚠️  Промт должен быть коротким (до 20 слов)\n💡 Пример: 'плагин для смены аватарки и тд'")
+                msg = bot.send_message(chat_id, "🔌 Опишите какой плагин нужен:\n\n💡 Пример: 'плагин для смены аватарки в Telegram'")
                 bot.register_next_step_handler(msg, process_plugin_request)
                 user_states[chat_id] = 'waiting_plugin_request'
         elif call.data == 'modify_code':
@@ -393,7 +431,7 @@ def handle_callback(call):
                 bot.answer_callback_query(call.id, "❌ У вас закончились запросы!")
                 show_subscription_info(call.message)
             else:
-                msg = bot.send_message(chat_id, "📎 Отправьте .py файл для изменения\n\n💡 Можно изменять код по частям\n")
+                msg = bot.send_message(chat_id, "📎 Отправьте .py файл для изменения\n\n💡 Можно описывать изменения подробно")
                 user_states[chat_id] = 'waiting_code_file'
         elif call.data == 'stats':
             stats = get_stats()
@@ -506,7 +544,7 @@ def handle_document(message):
                 downloaded_file = bot.download_file(file_info.file_path)
                 code_content = downloaded_file.decode('utf-8')
                 user_states[chat_id] = {'state': 'waiting_modification_request', 'code': code_content}
-                msg = bot.send_message(chat_id, "✏️ Что изменить в коде?\n\n⚠️  Описывайте коротко (до 15 слов)\n💡 Пример: 'добавь обработку ошибок'")
+                msg = bot.send_message(chat_id, "✏️ Что изменить в коде?\n\n💡 Пример: 'добавь обработку ошибок и логирование'")
                 bot.register_next_step_handler(msg, process_modification_request)
             except Exception as e:
                 bot.send_message(chat_id, f"❌ Ошибка при чтении файла: {str(e)}")
