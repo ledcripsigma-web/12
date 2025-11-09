@@ -8,7 +8,7 @@ from flask import Flask, request
 
 # Конфигурация
 API_KEY = "AIzaSyARZYE8kSTBVlGF_A1jxFdEQdVi5-9MN38"
-BOT_TOKEN = "2201149182:AAG5kZQcl8AqMgbqqCGu4eiyik8AIFQA03Q/test"
+BOT_TOKEN = "2201851225:AAEruvQjAyxiYIcsVCwa-JoIcWaXMx4kqE8/test"
 SELECTED_MODEL = "gemini-2.5-flash"
 
 bot = telebot.TeleBot(BOT_TOKEN)
