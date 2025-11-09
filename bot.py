@@ -11,9 +11,9 @@ import sqlite3
 from datetime import datetime
 
 # Конфигурация
-API_KEY = "sk-BCXFTfe4JlgUJNJcv6vtW7bqk1AuBmZQwEjiccj2t4RG52WKTmPw1vBrnPnD"
+API_KEY = "AIzaSyARZYE8kSTBVlGF_A1jxFdEQdVi5-9MN38"
 BOT_TOKEN = "2201851225:AAEruvQjAyxiYIcsVCwa-JoIcWaXMx4kqE8/test"
-SELECTED_MODEL = "llama-3.3-70b-versatile"
+SELECTED_MODEL = "gemini-2.5-flash"
 CHANNEL_USERNAME = "@GeniAi"
 ADMIN_ID = 2202291197  # Твой ID
 
@@ -655,7 +655,7 @@ def process_plugin_request(message):
         
     except Exception as e:
         bot.delete_message(chat_id, processing_msg.message_id)
-        bot.send_message(chat_id, f"❌ Произошла ошибка при генерации плагина: {str(e)}")
+        bot.send_message(chat_id, f"❌ Произошла ошибка при генерации плагина,попробуй еще раз либо уменьши запрос: {str(e)}")
         add_requests(user_id, 1, "Возврат при ошибке")
 
 @bot.message_handler(content_types=['document'])
@@ -740,7 +740,7 @@ def process_modification_request(message):
         
     except Exception as e:
         bot.delete_message(chat_id, processing_msg.message_id)
-        bot.send_message(chat_id, f"❌ Произошла ошибка при изменении кода: {str(e)}")
+        bot.send_message(chat_id, f"❌ Произошла ошибка при изменении кода попробуй позже либо меньше промт: {str(e)}")
         add_requests(user_id, 1, "Возврат при ошибке")
 
 @bot.message_handler(func=lambda message: True)
