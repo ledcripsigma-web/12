@@ -1,20 +1,12 @@
 import requests
 import json
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 import io
 import os
 from flask import Flask, request
 
-# Костыль для imghdr в Python 3.13
-try:
-    import imghdr
-except ImportError:
-    import magic
-    imghdr = None
-
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
-
-# Остальной код без изменений...
+# Конфигурация
 API_KEY = "AIzaSyARZYE8kSTBVlGF_A1jxFdEQdVi5-9MN38"
 BOT_TOKEN = "2201149182:AAG5kZQcl8AqMgbqqCGu4eiyik8AIFQA03Q/test"
 SELECTED_MODEL = "gemini-2.5-flash"
@@ -191,7 +183,7 @@ async def process_code_request(update: Update, context: ContextTypes.DEFAULT_TYP
         await start(update, context)
         return
     
-    processing_msg = await update.message.reply_text("⚙️ Код готовится... Это может занять несколько секунд")
+    processing_msg = await update.message.reply_text("⚙️ Код готовится... Это может зануть несколько секунд")
     
     try:
         gemini = GeminiChat()
@@ -222,7 +214,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if user_states.get(chat_id) == 'waiting_code_file':
         document = update.message.document
-        if document.file_name.endswith('.py'):
+        if document.file_name and document.file_name.endswith('.py'):
             try:
                 file = await context.bot.get_file(document.file_id)
                 file_content = await file.download_as_bytearray()
@@ -298,4 +290,4 @@ if __name__ == "__main__":
     # Запускаем сервер
     port = int(os.environ.get('PORT', 10000))
     print(f"🚀 Bot starting on port {port}")
-    app.run(host='0.0.0.0', port=port, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=False)    
