@@ -95,6 +95,7 @@ def get_user_balance(user_id):
     result = cursor.fetchone()
     conn.close()
     return result[0] if result else 0
+    
 def add_stat(user_id, action_type):
     conn = sqlite3.connect('bot_stats.db')
     cursor = conn.cursor()
@@ -104,24 +105,9 @@ def add_stat(user_id, action_type):
     conn.commit()
     conn.close()
 
-# ↓↓↓ ВСТАВЬ ЗДЕСЬ ↓↓↓
-def split_long_prompt(prompt, max_words=20):
-    """Разделяет длинный промт на части по 20 слов"""
-    words = prompt.split()
-    if len(words) <= max_words:
-        return [prompt]
-    
-    parts = []
-    for i in range(0, len(words), max_words):
-        part = ' '.join(words[i:i + max_words])
-        parts.append(part)
-    return parts
-# ↑↑↑ ВСТАВЬ ЗДЕСЬ ↑↑↑
-
 def add_requests(user_id, amount, reason, admin_id=None):
     current_balance = get_user_balance(user_id)
     new_balance = current_balance + amount
-    
     conn = sqlite3.connect('bot_stats.db')
     cursor = conn.cursor()
     cursor.execute('UPDATE users SET requests_balance = ? WHERE user_id = ?', (new_balance, user_id))
