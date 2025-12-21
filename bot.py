@@ -8,7 +8,7 @@ import threading
 import time
 import logging
 from datetime import datetime
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ========== НАСТРОЙКИ ==========
@@ -53,7 +53,6 @@ init_db()
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 active = {}
-app = None
 
 # ========== КОМАНДЫ БОТА ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -63,7 +62,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📦 Отправь ZIP -> напиши команду python ...\n\n"
         "Команды:\n"
         "/myfiles - мои проекты\n"
-        "/stop - остановить\n"
+        "/stop - остановить проект\n"
         "/ping - проверить пинг"
     )
 
@@ -145,7 +144,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                   (text, process.pid, proj_id))
         conn.commit()
         
-        await update.message.reply_text(f"🚀 Запущено!\nPID: {process.pid}\n/stop_{proj_id}")
+        await update.message.reply_text(f"🚀 Запущено!\nID проекта: {proj_id}\nPID: {process.pid}\nОстановить: /stop_{proj_id}")
         
         threading.Thread(target=read_output, args=(proj_id, process), daemon=True).start()
         
@@ -188,6 +187,7 @@ async def myfiles(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"ID: {p[0]}\nФайл: {p[1]}\nКоманда: {p[2] or 'нет'}\nСтатус: {p[3]}\n"
         if p[4]:
             text += f"PID: {p[4]}\n"
+        text += f"Остановить: /stop_{p[0]}\n"
         text += "─" * 20 + "\n"
     
     await update.message.reply_text(text)
@@ -204,7 +204,7 @@ async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         
         if not running:
-            await update.message.reply_text("✅ Нет запущенных")
+            await update.message.reply_text("✅ Нет запущенных проектов")
             return
         
         text = "🛑 Остановить:\n"
@@ -243,6 +243,46 @@ async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
+async def stop_specific(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команд /stop_123"""
+    user = update.effective_user
+    command = update.message.text
+    
+    # Извлекаем ID из команды /stop_123
+    try:
+        proj_id = int(command.split('_')[1])
+    except:
+        await update.message.reply_text("❌ Неверный формат команды. Используй /stop_123")
+        return
+    
+    conn = sqlite3.connect('projects.db')
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM projects WHERE id=?", (proj_id,))
+    result = c.fetchone()
+    
+    if not result or result[0] != user.id:
+        await update.message.reply_text("❌ Не твой проект")
+        conn.close()
+        return
+    
+    # Останавливаем процесс
+    if proj_id in active:
+        process = active[proj_id]
+        try:
+            process.terminate()
+            process.wait(timeout=2)
+        except:
+            if process.poll() is None:
+                process.kill()
+        del active[proj_id]
+    
+    # Обновляем статус в БД
+    c.execute("UPDATE projects SET status='stopped', pid=NULL WHERE id=?", (proj_id,))
+    conn.commit()
+    conn.close()
+    
+    await update.message.reply_text(f"✅ Проект {proj_id} остановлен")
+
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -273,9 +313,7 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== ЗАПУСК БОТА ==========
 def main():
-    global app
-    
-    # Используем ApplicationBuilder вместо asyncio.run
+    # Создаем приложение
     app = Application.builder().token(TOKEN).build()
     
     # Регистрируем обработчики
@@ -284,6 +322,11 @@ def main():
     app.add_handler(CommandHandler("myfiles", myfiles))
     app.add_handler(CommandHandler("stop", stop_cmd))
     app.add_handler(CommandHandler("admin", admin))
+    
+    # Регистрируем динамические команды /stop_123
+    app.add_handler(MessageHandler(filters.Regex(r'^/stop_\d+$'), stop_specific))
+    
+    # Другие обработчики
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
@@ -297,4 +340,4 @@ def main():
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    main()  # Просто main(), без asyncio.run
+    main()
