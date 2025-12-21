@@ -4,31 +4,37 @@ import zipfile
 import subprocess
 import shutil
 import asyncio
-import aiohttp
+import requests
+import threading
+import time
 import logging
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 # ========== НАСТРОЙКИ ==========
-TOKEN = "2202599086:AAH6oYmkqHVOiN5ieQwh0moaewQzMzkOMcI/test"  # 🔴 ЗАМЕНИ НА СВОЙ ТОКЕН!
+TOKEN = "2202599086:AAH6oYmkqHVOiN5ieQwh0moaewQzMzkOMcI/test"  # 🔴 ТВОЙ ТОКЕН (С /test)
 ADMIN_ID = 2202291197
 MAX_SIZE = 15 * 1024 * 1024  # 15MB
 PING_URL = "https://one2-2-b7o0.onrender.com"  # 🎯 ТВОЙ ХОСТ ДЛЯ ПИНГА
 PING_INTERVAL = 240  # Пинг каждые 4 минуты (в секундах)
 
-# ========== АВТО-ПИНГ ==========
-async def auto_ping():
-    """Автоматический пинг хоста каждые 4 минуты"""
+# ========== АВТО-ПИНГ (ПРОСТОЙ ВАРИАНТ) ==========
+def auto_ping_background():
+    """Фоновая функция для авто-пинга"""
+    print(f"🚀 Авто-пинг запущен для {PING_URL}")
     while True:
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(PING_URL) as response:
-                    print(f"✅ [{datetime.now().strftime('%H:%M:%S')}] Пинг отправлен. Статус: {response.status}")
+            response = requests.get(PING_URL, timeout=10)
+            print(f"✅ [{datetime.now().strftime('%H:%M:%S')}] Пинг отправлен. Статус: {response.status_code}")
         except Exception as e:
             print(f"❌ [{datetime.now().strftime('%H:%M:%S')}] Ошибка пинга: {e}")
         
-        await asyncio.sleep(PING_INTERVAL)
+        time.sleep(PING_INTERVAL)
+
+# Запускаем авто-пинг в отдельном потоке
+ping_thread = threading.Thread(target=auto_ping_background, daemon=True)
+ping_thread.start()
 
 # ========== БАЗА ДАННЫХ ==========
 def init_db():
@@ -50,7 +56,6 @@ init_db()
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 active = {}  # Активные процессы {project_id: process}
-bot_app = None  # Ссылка на приложение бота
 
 # ========== КОМАНДЫ БОТА ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -70,9 +75,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ping_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Ручная проверка пинга"""
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(PING_URL) as response:
-                await update.message.reply_text(f"✅ Пинг отправлен! Статус: {response.status}")
+        response = requests.get(PING_URL, timeout=10)
+        await update.message.reply_text(f"✅ Пинг отправлен! Статус: {response.status_code}")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
@@ -182,7 +186,6 @@ async def read_output(proj_id, process):
             line = process.stdout.readline()
             if not line and process.poll() is not None:
                 break
-            # Можно добавить сохранение логов в БД
     except:
         pass
     finally:
@@ -334,25 +337,20 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== ЗАПУСК БОТА ==========
 async def main():
-    global bot_app
-    
     # Создаем приложение бота
-    bot_app = Application.builder().token(TOKEN).build()
+    application = Application.builder().token(TOKEN).build()
     
     # Регистрируем обработчики команд
-    bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CommandHandler("ping", ping_now))
-    bot_app.add_handler(CommandHandler("myfiles", myfiles))
-    bot_app.add_handler(CommandHandler("stop", stop_cmd))
-    bot_app.add_handler(CommandHandler("status", status))
-    bot_app.add_handler(CommandHandler("admin", admin))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("ping", ping_now))
+    application.add_handler(CommandHandler("myfiles", myfiles))
+    application.add_handler(CommandHandler("stop", stop_cmd))
+    application.add_handler(CommandHandler("status", status))
+    application.add_handler(CommandHandler("admin", admin))
     
     # Обработчики сообщений
-    bot_app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    
-    # Запускаем авто-пинг в фоне
-    asyncio.create_task(auto_ping())
+    application.add_handler(MessageHandler(filters.Document.ALL, handle_file))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
     print("=" * 50)
     print("🤖 Бот запущен!")
@@ -361,7 +359,7 @@ async def main():
     print("=" * 50)
     
     # Запускаем бота
-    await bot_app.run_polling()
+    await application.run_polling()
 
 if __name__ == "__main__":
     # Настраиваем логирование
