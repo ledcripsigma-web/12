@@ -3,36 +3,33 @@ import sqlite3
 import zipfile
 import subprocess
 import shutil
-import asyncio
 import requests
 import threading
 import time
 import logging
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ========== НАСТРОЙКИ ==========
-TOKEN = "2202599086:AAH6oYmkqHVOiN5ieQwh0moaewQzMzkOMcI/test"  # 🔴 ТВОЙ ТОКЕН (С /test)
+TOKEN = "2202599086:AAH6oYmkqHVOiN5ieQwh0moaewQzMzkOMcI/test"
 ADMIN_ID = 2202291197
-MAX_SIZE = 15 * 1024 * 1024  # 15MB
-PING_URL = "https://one2-2-b7o0.onrender.com"  # 🎯 ТВОЙ ХОСТ ДЛЯ ПИНГА
-PING_INTERVAL = 240  # Пинг каждые 4 минуты (в секундах)
+MAX_SIZE = 15 * 1024 * 1024
+PING_URL = "https://one2-2-b7o0.onrender.com"
+PING_INTERVAL = 240
 
-# ========== АВТО-ПИНГ (ПРОСТОЙ ВАРИАНТ) ==========
+# ========== АВТО-ПИНГ ==========
 def auto_ping_background():
-    """Фоновая функция для авто-пинга"""
     print(f"🚀 Авто-пинг запущен для {PING_URL}")
     while True:
         try:
             response = requests.get(PING_URL, timeout=10)
-            print(f"✅ [{datetime.now().strftime('%H:%M:%S')}] Пинг отправлен. Статус: {response.status_code}")
+            print(f"✅ [{datetime.now().strftime('%H:%M:%S')}] Пинг. Статус: {response.status_code}")
         except Exception as e:
-            print(f"❌ [{datetime.now().strftime('%H:%M:%S')}] Ошибка пинга: {e}")
-        
+            print(f"❌ [{datetime.now().strftime('%H:%M:%S')}] Ошибка: {e}")
         time.sleep(PING_INTERVAL)
 
-# Запускаем авто-пинг в отдельном потоке
+# Запускаем пинг
 ping_thread = threading.Thread(target=auto_ping_background, daemon=True)
 ping_thread.start()
 
@@ -55,28 +52,25 @@ def init_db():
 init_db()
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
-active = {}  # Активные процессы {project_id: process}
+active = {}
+app = None
 
 # ========== КОМАНДЫ БОТА ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🚀 Python Host Bot + Auto-Ping\n\n"
-        "✅ Авто-пинг активен для:\n"
-        f"🔗 {PING_URL}\n\n"
-        "📦 Отправь ZIP с Python проектом\n"
-        "💻 Затем команду для запуска\n\n"
+        "🚀 Python Host Bot\n"
+        f"✅ Авто-пинг: {PING_URL}\n\n"
+        "📦 Отправь ZIP -> напиши команду python ...\n\n"
         "Команды:\n"
         "/myfiles - мои проекты\n"
-        "/stop - остановить проект\n"
-        "/status - статус проектов\n"
-        "/ping - проверить пинг сейчас"
+        "/stop - остановить\n"
+        "/ping - проверить пинг"
     )
 
 async def ping_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ручная проверка пинга"""
     try:
         response = requests.get(PING_URL, timeout=10)
-        await update.message.reply_text(f"✅ Пинг отправлен! Статус: {response.status_code}")
+        await update.message.reply_text(f"✅ Пинг! Статус: {response.status_code}")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
@@ -86,21 +80,19 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     file = update.message.document
     if not file.file_name.endswith('.zip'):
-        await update.message.reply_text("❌ Только ZIP файлы")
+        await update.message.reply_text("❌ Только ZIP")
         return
     
     if file.file_size > MAX_SIZE:
-        await update.message.reply_text("❌ Максимум 15MB")
+        await update.message.reply_text("❌ Макс 15MB")
         return
     
     user = update.effective_user
     filename = f"{user.id}_{file.file_name}"
     
-    # Скачиваем файл
     file_obj = await file.get_file()
     await file_obj.download_to_drive(filename)
     
-    # Сохраняем в БД
     conn = sqlite3.connect('projects.db')
     c = conn.cursor()
     c.execute("INSERT INTO projects (user_id, username, filename, status) VALUES (?, ?, ?, ?)",
@@ -108,34 +100,27 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit()
     conn.close()
     
-    await update.message.reply_text(
-        f"✅ {file.file_name} сохранен!\n\n"
-        f"Теперь напиши команду для запуска.\n"
-        f"Например: python main.py\n"
-        f"Или: python bot.py"
-    )
+    await update.message.reply_text(f"✅ {file.file_name} сохранен\nНапиши команду python ...")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     user = update.effective_user
     
     if not text.startswith('python'):
-        await update.message.reply_text("❌ Только python команды (начинаются с python)")
+        await update.message.reply_text("❌ Только python команды")
         return
     
-    # Ищем последний загруженный файл пользователя
     conn = sqlite3.connect('projects.db')
     c = conn.cursor()
     c.execute("SELECT id, filename FROM projects WHERE user_id=? AND status='uploaded' ORDER BY id DESC LIMIT 1", (user.id,))
     result = c.fetchone()
     
     if not result:
-        await update.message.reply_text("❌ Сначала загрузи ZIP файл!")
+        await update.message.reply_text("❌ Сначала загрузи ZIP")
         return
     
     proj_id, filename = result
     
-    # Распаковываем
     extract_dir = f"project_{proj_id}"
     if os.path.exists(extract_dir):
         shutil.rmtree(extract_dir)
@@ -145,7 +130,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with zipfile.ZipFile(filename, 'r') as zip_ref:
             zip_ref.extractall(extract_dir)
         
-        # Запускаем процесс
         process = subprocess.Popen(
             text,
             shell=True,
@@ -155,32 +139,22 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text=True
         )
         
-        # Сохраняем процесс
         active[proj_id] = process
         
-        # Обновляем БД
         c.execute("UPDATE projects SET command=?, status='running', pid=? WHERE id=?",
                   (text, process.pid, proj_id))
         conn.commit()
         
-        await update.message.reply_text(
-            f"🚀 Проект запущен!\n\n"
-            f"📁 Файл: {filename}\n"
-            f"⚡ Команда: {text}\n"
-            f"🔢 PID: {process.pid}\n\n"
-            f"Чтобы остановить: /stop_{proj_id}"
-        )
+        await update.message.reply_text(f"🚀 Запущено!\nPID: {process.pid}\n/stop_{proj_id}")
         
-        # Запускаем чтение логов в фоне
-        asyncio.create_task(read_output(proj_id, process))
+        threading.Thread(target=read_output, args=(proj_id, process), daemon=True).start()
         
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка запуска: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {e}")
     finally:
         conn.close()
 
-async def read_output(proj_id, process):
-    """Чтение вывода процесса"""
+def read_output(proj_id, process):
     try:
         while True:
             line = process.stdout.readline()
@@ -189,7 +163,6 @@ async def read_output(proj_id, process):
     except:
         pass
     finally:
-        # Очистка при завершении процесса
         if proj_id in active:
             del active[proj_id]
         conn = sqlite3.connect('projects.db')
@@ -207,17 +180,14 @@ async def myfiles(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
     
     if not projects:
-        await update.message.reply_text("📭 У тебя пока нет проектов")
+        await update.message.reply_text("📭 Нет проектов")
         return
     
     text = "📁 Твои проекты:\n\n"
     for p in projects:
-        text += f"🆔 ID: {p[0]}\n"
-        text += f"📄 Файл: {p[1]}\n"
-        text += f"⚡ Команда: {p[2] or 'нет'}\n"
-        text += f"📊 Статус: {p[3]}\n"
+        text += f"ID: {p[0]}\nФайл: {p[1]}\nКоманда: {p[2] or 'нет'}\nСтатус: {p[3]}\n"
         if p[4]:
-            text += f"🔢 PID: {p[4]}\n"
+            text += f"PID: {p[4]}\n"
         text += "─" * 20 + "\n"
     
     await update.message.reply_text(text)
@@ -227,7 +197,6 @@ async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
     if not args:
-        # Показываем запущенные проекты
         conn = sqlite3.connect('projects.db')
         c = conn.cursor()
         c.execute("SELECT id, filename FROM projects WHERE user_id=? AND status='running'", (user.id,))
@@ -235,30 +204,27 @@ async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         
         if not running:
-            await update.message.reply_text("✅ Нет запущенных проектов")
+            await update.message.reply_text("✅ Нет запущенных")
             return
         
-        text = "🛑 Выбери проект для остановки:\n\n"
+        text = "🛑 Остановить:\n"
         for proj_id, filename in running:
             text += f"/stop_{proj_id} - {filename}\n"
         await update.message.reply_text(text)
         return
     
-    # Останавливаем конкретный проект
     try:
         proj_id = int(args[0])
         
-        # Проверяем владельца
         conn = sqlite3.connect('projects.db')
         c = conn.cursor()
         c.execute("SELECT user_id FROM projects WHERE id=?", (proj_id,))
         result = c.fetchone()
         
         if not result or result[0] != user.id:
-            await update.message.reply_text("❌ Это не твой проект!")
+            await update.message.reply_text("❌ Не твой проект")
             return
         
-        # Останавливаем процесс
         if proj_id in active:
             process = active[proj_id]
             process.terminate()
@@ -277,26 +243,6 @@ async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    running = []
-    
-    for proj_id, process in active.items():
-        # Проверяем владельца в БД
-        conn = sqlite3.connect('projects.db')
-        c = conn.cursor()
-        c.execute("SELECT user_id FROM projects WHERE id=?", (proj_id,))
-        result = c.fetchone()
-        conn.close()
-        
-        if result and result[0] == user.id:
-            running.append(f"• Проект {proj_id} - PID: {process.pid}")
-    
-    if running:
-        await update.message.reply_text("🚀 Запущенные проекты:\n" + "\n".join(running))
-    else:
-        await update.message.reply_text("📭 Нет запущенных проектов")
-
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -304,66 +250,51 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = sqlite3.connect('projects.db')
     c = conn.cursor()
     
-    # Статистика
     c.execute("SELECT COUNT(*), COUNT(DISTINCT user_id) FROM projects")
     total, users = c.fetchone()
     
     c.execute("SELECT COUNT(*) FROM projects WHERE status='running'")
     running = c.fetchone()[0]
     
-    # Последние проекты
     c.execute("SELECT id, user_id, username, filename, command, status FROM projects ORDER BY id DESC LIMIT 10")
     projects = c.fetchall()
     
     conn.close()
     
-    text = f"👑 АДМИН ПАНЕЛЬ\n\n"
-    text += f"📊 Всего проектов: {total}\n"
-    text += f"🚀 Запущено сейчас: {running}\n"
-    text += f"👤 Уникальных пользователей: {users}\n"
-    text += f"✅ Авто-пинг активен: {PING_URL}\n\n"
+    text = f"👑 АДМИН\n\nВсего: {total}\nЗапущено: {running}\nПользователей: {users}\nПинг: {PING_URL}\n\n"
     
-    text += "📁 Последние проекты:\n"
     for p in projects:
-        text += f"\n🆔 ID:{p[0]} 👤 @{p[2]}({p[1]})\n"
-        text += f"📄 {p[3]}\n"
-        text += f"⚡ {p[4] or 'нет'}\n"
-        text += f"📊 Статус: {p[5]}\n"
+        text += f"ID:{p[0]} @{p[2]}\n{p[3]}\n{p[4] or 'нет'}\nСтатус: {p[5]}\n"
         if p[0] in active:
-            text += f"🔢 PID: {active[p[0]].pid}\n"
+            text += f"PID: {active[p[0]].pid}\n"
         text += "─\n"
     
     await update.message.reply_text(text)
 
 # ========== ЗАПУСК БОТА ==========
-async def main():
-    # Создаем приложение бота
-    application = Application.builder().token(TOKEN).build()
+def main():
+    global app
     
-    # Регистрируем обработчики команд
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("ping", ping_now))
-    application.add_handler(CommandHandler("myfiles", myfiles))
-    application.add_handler(CommandHandler("stop", stop_cmd))
-    application.add_handler(CommandHandler("status", status))
-    application.add_handler(CommandHandler("admin", admin))
+    # Используем ApplicationBuilder вместо asyncio.run
+    app = Application.builder().token(TOKEN).build()
     
-    # Обработчики сообщений
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    # Регистрируем обработчики
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("ping", ping_now))
+    app.add_handler(CommandHandler("myfiles", myfiles))
+    app.add_handler(CommandHandler("stop", stop_cmd))
+    app.add_handler(CommandHandler("admin", admin))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
     print("=" * 50)
     print("🤖 Бот запущен!")
-    print(f"👑 Админ ID: {ADMIN_ID}")
-    print(f"✅ Авто-пинг активен для: {PING_URL}")
+    print(f"✅ Авто-пинг: {PING_URL}")
     print("=" * 50)
     
     # Запускаем бота
-    await application.run_polling()
+    app.run_polling()
 
 if __name__ == "__main__":
-    # Настраиваем логирование
     logging.basicConfig(level=logging.INFO)
-    
-    # Запускаем основную функцию
-    asyncio.run(main())
+    main()  # Просто main(), без asyncio.run
