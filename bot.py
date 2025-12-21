@@ -19,49 +19,59 @@ MAX_SIZE = 15 * 1024 * 1024
 PING_URL = "https://one2-2-b7o0.onrender.com"
 PING_INTERVAL = 240
 
-# ========== АНТИ-СПАМ СИСТЕМА ==========
+# ========== АНТИ-ДДОС СИСТЕМА ==========
 SPAM_LIMIT = 5  # 5 запросов
-SPAM_WINDOW = 5  # за 5 секунд (исправил)
-banned_users = {}  # {user_id: ban_time}
+SPAM_WINDOW = 5  # за 5 секунд
+banned_users = set()  # Множество забаненных ID (только ID)
 user_requests = {}  # {user_id: [timestamp1, timestamp2, ...]}
 
-def check_spam(user_id: int) -> bool:
-    """Проверяет спам и банит если нужно"""
+def check_and_ban(user_id: int) -> bool:
+    """Проверяет спам и добавляет в бан-лист. Возвращает True если пользователь забанен"""
+    # Если уже забанен - сразу True
+    if user_id in banned_users:
+        return True
+    
     current_time = time.time()
     
+    # Инициализируем список запросов
     if user_id not in user_requests:
         user_requests[user_id] = []
     
+    # Добавляем текущий запрос
     user_requests[user_id].append(current_time)
     
+    # Очищаем старые запросы
     user_requests[user_id] = [t for t in user_requests[user_id] 
                              if current_time - t < SPAM_WINDOW]
     
+    # Если превышен лимит - БАН НАВСЕГДА
     if len(user_requests[user_id]) > SPAM_LIMIT:
-        banned_users[user_id] = current_time
-        print(f"🚫 Пользователь {user_id} забанен за спам")
-        return True
-    
-    if user_id in banned_users:
+        banned_users.add(user_id)
+        print(f"🚫 Пользователь {user_id} ЗАБАНЕН НАВСЕГДА за DDoS ({len(user_requests[user_id])} запросов за {SPAM_WINDOW} сек)")
         return True
     
     return False
 
-def is_banned(user_id: int) -> bool:
-    return user_id in banned_users
-
-async def check_ban_and_spam(update: Update, context: ContextTypes.DEFAULT_TYPE, func):
-    """Проверяет бан и спам перед выполнением команды"""
-    user = update.effective_user
+# ========== ДЕКОРАТОР ДЛЯ ПРОВЕРКИ БАНА ==========
+def ignore_banned_users(func):
+    """Декоратор, который полностью игнорирует забаненных пользователей"""
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # Получаем user_id
+        if update.message:
+            user_id = update.message.from_user.id
+        elif update.callback_query:
+            user_id = update.callback_query.from_user.id
+        else:
+            return
+        
+        # Проверяем спам/бан ПЕРЕД выполнением
+        if check_and_ban(user_id):
+            return  # Просто выходим, ничего не делаем и не отвечаем
+        
+        # Выполняем функцию только если не забанен
+        await func(update, context)
     
-    if is_banned(user.id):
-        return
-    
-    if check_spam(user.id):
-        await update.message.reply_text("🚫 Вы забанены за спам!")
-        return
-    
-    await func(update, context)
+    return wrapper
 
 # ========== АВТО-ПИНГ ==========
 def auto_ping_background():
@@ -129,10 +139,6 @@ async def check_subscription(user_id: int, app) -> bool:
 async def require_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE, func):
     user = update.effective_user
     
-    # Сначала проверяем бан
-    if is_banned(user.id):
-        return
-    
     conn = sqlite3.connect('projects.db')
     c = conn.cursor()
     c.execute("SELECT subscribed FROM users WHERE user_id=?", (user.id,))
@@ -155,84 +161,10 @@ async def require_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
     
     await func(update, context)
 
-# ========== ОБРАБОТЧИК КНОПКИ ПРОВЕРКИ ==========
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user = query.from_user
-    
-    if is_banned(user.id):
-        return
-    
-    await query.answer()
-    
-    if query.data == "check_sub":
-        user_id = user.id
-        is_subscribed = await check_subscription(user_id, context.application)
-        
-        if is_subscribed:
-            await query.edit_message_text(
-                "✅ Отлично! Теперь вы можете использовать бота.\n"
-                "Введите /start для начала работы."
-            )
-        else:
-            keyboard = [
-                [InlineKeyboardButton("📢 Подписаться на канал", url=f"https://t.me/{CHANNEL_USERNAME[1:]}")],
-                [InlineKeyboardButton("🔄 Проверить подписку", callback_data="check_sub")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text(
-                f"❌ Вы еще не подписались на канал {CHANNEL_USERNAME}\n"
-                "Пожалуйста, подпишитесь и нажмите кнопку проверки:",
-                reply_markup=reply_markup
-            )
-
-# ========== ФУНКЦИЯ ОСТАНОВКИ ==========
-def stop_project_simple(user_id: int, proj_id: int) -> bool:
-    try:
-        conn = sqlite3.connect('projects.db')
-        c = conn.cursor()
-        c.execute("SELECT user_id, pid FROM projects WHERE id=?", (proj_id,))
-        result = c.fetchone()
-        
-        if not result or result[0] != user_id:
-            conn.close()
-            return False
-        
-        pid = result[1]
-        
-        if proj_id in active:
-            try:
-                process = active[proj_id]
-                process.terminate()
-                try:
-                    process.wait(timeout=2)
-                except:
-                    pass
-                if process.poll() is None:
-                    process.kill()
-                del active[proj_id]
-            except Exception as e:
-                print(f"Ошибка остановки процесса: {e}")
-        
-        if pid:
-            try:
-                os.system(f"pkill -P {pid} 2>/dev/null")
-                os.system(f"kill -9 {pid} 2>/dev/null")
-            except:
-                pass
-        
-        c.execute("UPDATE projects SET status='stopped' WHERE id=?", (proj_id,))
-        conn.commit()
-        conn.close()
-        
-        return True
-    except Exception as e:
-        logging.error(f"Ошибка остановки проекта {proj_id}: {e}")
-        return False
-
-# ========== КОМАНДЫ БОТА ==========
+# ========== ОСНОВНЫЕ ОБРАБОТЧИКИ С ДЕКОРАТОРОМ ==========
+@ignore_banned_users
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await check_ban_and_spam(update, context, lambda u, c: require_subscription(u, c, start_handler))
+    await require_subscription(update, context, start_handler)
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -245,8 +177,9 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/ping - проверить пинг"
     )
 
+@ignore_banned_users
 async def ping_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await check_ban_and_spam(update, context, lambda u, c: require_subscription(u, c, ping_now_handler))
+    await require_subscription(update, context, ping_now_handler)
 
 async def ping_now_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -255,14 +188,9 @@ async def ping_now_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
+@ignore_banned_users
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if is_banned(user.id):
-        return
-    
-    if check_spam(user.id):
-        await update.message.reply_text("🚫 Вы забанены за спам!")
-        return
     
     if not await check_subscription(user.id, context.application):
         keyboard = [
@@ -302,14 +230,9 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(f"✅ {file.file_name} сохранен\nНапиши команду python ...")
 
+@ignore_banned_users
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    if is_banned(user.id):
-        return
-    
-    if check_spam(user.id):
-        await update.message.reply_text("🚫 Вы забанены за спам!")
-        return
     
     if not await check_subscription(user.id, context.application):
         return
@@ -385,8 +308,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         conn.close()
 
+@ignore_banned_users
 async def myfiles(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await check_ban_and_spam(update, context, lambda u, c: require_subscription(u, c, myfiles_handler))
+    await require_subscription(update, context, myfiles_handler)
 
 async def myfiles_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -410,8 +334,9 @@ async def myfiles_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(text)
 
+@ignore_banned_users
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await check_ban_and_spam(update, context, lambda u, c: require_subscription(u, c, stop_cmd_handler))
+    await require_subscription(update, context, stop_cmd_handler)
 
 async def stop_cmd_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -432,15 +357,9 @@ async def stop_cmd_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(text)
 
+@ignore_banned_users
 async def stop_specific(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    
-    if is_banned(user.id):
-        return
-    
-    if check_spam(user.id):
-        await update.message.reply_text("🚫 Вы забанены за спам!")
-        return
     
     if not await check_subscription(user.id, context.application):
         return
@@ -450,20 +369,83 @@ async def stop_specific(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         proj_id = int(command.split('_')[1])
         
-        success = stop_project_simple(user.id, proj_id)
+        # Проверяем владельца
+        conn = sqlite3.connect('projects.db')
+        c = conn.cursor()
+        c.execute("SELECT user_id, pid FROM projects WHERE id=?", (proj_id,))
+        result = c.fetchone()
         
-        if success:
-            await update.message.reply_text(f"✅ Проект {proj_id} остановлен!")
-        else:
-            await update.message.reply_text(f"❌ Не ваш проект или его не существует")
+        if not result or result[0] != user.id:
+            await update.message.reply_text("❌ Не ваш проект")
+            conn.close()
+            return
+        
+        pid = result[1]
+        
+        # Останавливаем процесс
+        if proj_id in active:
+            try:
+                process = active[proj_id]
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except:
+                    pass
+                if process.poll() is None:
+                    process.kill()
+                del active[proj_id]
+            except Exception as e:
+                print(f"Ошибка остановки процесса: {e}")
+        
+        # Убиваем через PID
+        if pid:
+            try:
+                os.system(f"pkill -P {pid} 2>/dev/null")
+                os.system(f"kill -9 {pid} 2>/dev/null")
+            except:
+                pass
+        
+        # Обновляем статус
+        c.execute("UPDATE projects SET status='stopped' WHERE id=?", (proj_id,))
+        conn.commit()
+        conn.close()
+        
+        await update.message.reply_text(f"✅ Проект {proj_id} остановлен!")
+        
     except:
         await update.message.reply_text("❌ Используй: /stop_123")
 
+@ignore_banned_users
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "check_sub":
+        user_id = query.from_user.id
+        is_subscribed = await check_subscription(user_id, context.application)
+        
+        if is_subscribed:
+            await query.edit_message_text(
+                "✅ Отлично! Теперь вы можете использовать бота.\n"
+                "Введите /start для начала работы."
+            )
+        else:
+            keyboard = [
+                [InlineKeyboardButton("📢 Подписаться на канал", url=f"https://t.me/{CHANNEL_USERNAME[1:]}")],
+                [InlineKeyboardButton("🔄 Проверить подписку", callback_data="check_sub")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                f"❌ Вы еще не подписались на канал {CHANNEL_USERNAME}\n"
+                "Пожалуйста, подпишитесь и нажмите кнопку проверки:",
+                reply_markup=reply_markup
+            )
+
+# Админа не баним и не проверяем на спам
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
     
-    # Админа не баним
     conn = sqlite3.connect('projects.db')
     c = conn.cursor()
     
@@ -478,15 +460,28 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     conn.close()
     
-    text = f"👑 АДМИН\n\nВсего: {total}\nЗапущено: {running}\nПользователей: {users}\nПинг: {PING_URL}\n\n"
-    text += f"🚫 Забанено: {len(banned_users)}\n\n"
+    text = f"👑 АДМИН\n\nВсего проектов: {total}\nЗапущено: {running}\nУникальных пользователей: {users}\n\n"
+    text += f"🚫 ЗАБАНЕНО: {len(banned_users)} пользователей\n\n"
+    
+    if banned_users:
+        text += "Забаненные ID:\n"
+        banned_list = list(banned_users)
+        for i in range(0, len(banned_list), 5):
+            text += ", ".join(map(str, banned_list[i:i+5])) + "\n"
+        text += "\n"
     
     for p in projects:
-        text += f"ID:{p[0]} @{p[2]}\n{p[3]}\n{p[4] or 'нет'}\nСтатус: {p[5]}\n"
+        is_banned = p[1] in banned_users
+        text += f"ID:{p[0]} @{p[2]} "
+        if is_banned:
+            text += "🚫\n"
+        else:
+            text += "\n"
+        text += f"Файл: {p[3]}\n"
+        text += f"Команда: {p[4] or 'нет'}\n"
+        text += f"Статус: {p[5]}\n"
         if p[0] in active:
             text += f"PID: {active[p[0]].pid}\n"
-        if p[1] in banned_users:
-            text += f"🚫 ЗАБАНЕН\n"
         text += "─\n"
     
     await update.message.reply_text(text)
@@ -514,7 +509,7 @@ def main():
     print(f"✅ Авто-пинг: {PING_URL}")
     print(f"👤 Владелец: @wpwpwe")
     print(f"📢 Канал: {CHANNEL_USERNAME}")
-    print(f"🚫 Анти-спам: {SPAM_LIMIT} запросов за {SPAM_WINDOW} секунд")
+    print(f"🚫 АНТИ-ДДОС: {SPAM_LIMIT} запросов за {SPAM_WINDOW} сек -> ПЕРМАНЕНТНЫЙ БАН БЕЗ ОТВЕТОВ")
     print("=" * 50)
     
     app.run_polling()
