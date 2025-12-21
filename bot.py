@@ -8,6 +8,7 @@ import threading
 import time
 import logging
 from datetime import datetime
+from collections import defaultdict
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -19,62 +20,67 @@ MAX_SIZE = 15 * 1024 * 1024
 PING_URL = "https://one2-2-b7o0.onrender.com"
 PING_INTERVAL = 240
 
-# ========== АНТИ-ДДОС СИСТЕМА ==========
-SPAM_LIMIT = 5  # 5 запросов
-SPAM_WINDOW = 5  # за 5 секунд
-banned_users = set()  # Множество забаненных ID
-user_requests = {}  # {user_id: [timestamp1, timestamp2, ...]}
-last_message_time = {}  # {user_id: last_message_timestamp}
+# ========== АНТИ-ФЛУД СИСТЕМА (ВАШ ВАРИАНТ) ==========
+FLOOD_SETTINGS = {
+    'MAX_MESSAGES': 5,  # 5 сообщений
+    'TIME_WINDOW': 5,   # за 5 секунд
+    'BAN_DURATION': 999999999  # перманентный бан (очень большое число)
+}
 
-class BannedFilter(filters.MessageFilter):
-    """Фильтр, который отсекает забаненных пользователей ДО обработки"""
-    def filter(self, message):
-        user_id = message.from_user.id
-        
-        # Админа не фильтруем
-        if user_id == ADMIN_ID:
+user_messages = defaultdict(list)
+banned_users = {}
+
+def is_flooding(user_id):
+    """Проверяет флуд и банит если нужно"""
+    current_time = time.time()
+    
+    # Проверяем не забанен ли уже
+    if user_id in banned_users:
+        if current_time < banned_users[user_id]:
             return True
-        
-        # Проверяем спам и бан
-        current_time = time.time()
-        
-        # Инициализируем
-        if user_id not in user_requests:
-            user_requests[user_id] = []
-            last_message_time[user_id] = 0
-        
-        # Если уже забанен - сразу False
-        if user_id in banned_users:
-            return False
-        
-        # Проверяем временной промежуток между сообщениями
-        time_since_last = current_time - last_message_time[user_id]
-        if time_since_last < 0.1:  # Меньше 100мс между сообщениями - подозрительно
-            user_requests[user_id].append(current_time)
         else:
-            user_requests[user_id].append(current_time)
-        
-        last_message_time[user_id] = current_time
-        
-        # Очищаем старые запросы
-        user_requests[user_id] = [t for t in user_requests[user_id] 
-                                 if current_time - t < SPAM_WINDOW]
-        
-        # Если превышен лимит - бан навсегда
-        if len(user_requests[user_id]) > SPAM_LIMIT:
-            banned_users.add(user_id)
-            print(f"🚫 Пользователь {user_id} ЗАБАНЕН НАВСЕГДА за DDoS ({len(user_requests[user_id])} запросов за {SPAM_WINDOW} сек)")
-            # Чистим его данные чтобы не занимали память
-            if user_id in user_requests:
-                del user_requests[user_id]
-            if user_id in last_message_time:
-                del last_message_time[user_id]
-            return False
-        
+            del banned_users[user_id]
+            del user_messages[user_id]
+    
+    # Добавляем текущее сообщение
+    user_messages[user_id].append(current_time)
+    
+    # Очищаем старые сообщения
+    user_messages[user_id] = [t for t in user_messages[user_id] 
+                              if current_time - t <= FLOOD_SETTINGS['TIME_WINDOW']]
+    
+    # Если превышен лимит - бан
+    if len(user_messages[user_id]) > FLOOD_SETTINGS['MAX_MESSAGES']:
+        banned_users[user_id] = current_time + FLOOD_SETTINGS['BAN_DURATION']
+        print(f"🚫 Пользователь {user_id} забанен за флуд")
         return True
+    
+    return False
 
-# Создаем фильтр
-banned_filter = BannedFilter()
+def anti_flood(func):
+    """Декоратор для защиты от флуда"""
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # Получаем user_id
+        if update.message:
+            user_id = update.message.from_user.id
+        elif update.callback_query:
+            user_id = update.callback_query.from_user.id
+        else:
+            return
+        
+        # Пропускаем админа
+        if user_id == ADMIN_ID:
+            await func(update, context)
+            return
+        
+        # Проверяем флуд
+        if is_flooding(user_id):
+            return  # Просто игнорируем, ничего не делаем
+        
+        # Выполняем функцию
+        await func(update, context)
+    
+    return wrapper
 
 # ========== АВТО-ПИНГ ==========
 def auto_ping_background():
@@ -164,7 +170,8 @@ async def require_subscription(update: Update, context: ContextTypes.DEFAULT_TYP
     
     await func(update, context)
 
-# ========== ОСНОВНЫЕ ОБРАБОТЧИКИ ==========
+# ========== ОСНОВНЫЕ ОБРАБОТЧИКИ С ДЕКОРАТОРОМ ==========
+@anti_flood
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await require_subscription(update, context, start_handler)
 
@@ -179,6 +186,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/ping - проверить пинг"
     )
 
+@anti_flood
 async def ping_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await require_subscription(update, context, ping_now_handler)
 
@@ -189,6 +197,7 @@ async def ping_now_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
+@anti_flood
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
@@ -230,6 +239,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(f"✅ {file.file_name} сохранен\nНапиши команду python ...")
 
+@anti_flood
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
@@ -307,6 +317,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         conn.close()
 
+@anti_flood
 async def myfiles(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await require_subscription(update, context, myfiles_handler)
 
@@ -332,6 +343,7 @@ async def myfiles_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(text)
 
+@anti_flood
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await require_subscription(update, context, stop_cmd_handler)
 
@@ -354,6 +366,7 @@ async def stop_cmd_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(text)
 
+@anti_flood
 async def stop_specific(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     
@@ -411,6 +424,7 @@ async def stop_specific(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("❌ Используй: /stop_123")
 
+@anti_flood
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -436,7 +450,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=reply_markup
             )
 
-# Админа не баним
+# Админа не проверяем на флуд
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return
@@ -456,13 +470,15 @@ async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.close()
     
     text = f"👑 АДМИН\n\nВсего проектов: {total}\nЗапущено: {running}\nУникальных пользователей: {users}\n\n"
-    text += f"🚫 ЗАБАНЕНО: {len(banned_users)} пользователей\n\n"
+    text += f"🚫 ЗАБАНЕНО за флуд: {len(banned_users)} пользователей\n\n"
     
     if banned_users:
         text += "Забаненные ID (последние 20):\n"
-        banned_list = list(banned_users)[-20:]
-        for user_id in banned_list:
-            text += f"{user_id}\n"
+        # Берем последние 20 забаненных
+        banned_list = sorted(banned_users.items(), key=lambda x: x[1], reverse=True)[:20]
+        for user_id, ban_until in banned_list:
+            ban_time = datetime.fromtimestamp(ban_until).strftime('%Y-%m-%d %H:%M:%S') if ban_until < time.time() + 1000000 else "НАВСЕГДА"
+            text += f"ID: {user_id} (бан до: {ban_time})\n"
         text += "\n"
     
     for p in projects:
@@ -486,32 +502,25 @@ def main():
     app = Application.builder().token(TOKEN).build()
     
     from telegram.ext import CallbackQueryHandler
+    app.add_handler(CallbackQueryHandler(button_callback))
     
-    # СОЗДАЕМ КАСТОМНЫЙ ФИЛЬТР ДЛЯ ВСЕХ ОБРАБОТЧИКОВ
-    not_banned_filter = banned_filter
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("ping", ping_now))
+    app.add_handler(CommandHandler("myfiles", myfiles))
+    app.add_handler(CommandHandler("stop", stop_cmd))
+    app.add_handler(CommandHandler("admin", admin))
     
-    # Регистрируем обработчики с фильтром "не забанен"
-    app.add_handler(CommandHandler("start", start, filters=not_banned_filter))
-    app.add_handler(CommandHandler("ping", ping_now, filters=not_banned_filter))
-    app.add_handler(CommandHandler("myfiles", myfiles, filters=not_banned_filter))
-    app.add_handler(CommandHandler("stop", stop_cmd, filters=not_banned_filter))
-    app.add_handler(CommandHandler("admin", admin))  # Админа без фильтра
+    app.add_handler(MessageHandler(filters.Regex(r'^/stop_\d+$'), stop_specific))
     
-    # Обработчики сообщений с фильтром
-    app.add_handler(MessageHandler(filters.Regex(r'^/stop_\d+$') & not_banned_filter, stop_specific))
-    app.add_handler(MessageHandler(filters.Document.ALL & not_banned_filter, handle_file))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & not_banned_filter, handle_text))
-    
-    # Кнопки с фильтром
-    app.add_handler(CallbackQueryHandler(button_callback, pattern="^check_sub$"))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
     print("=" * 50)
     print("🤖 Бот запущен!")
     print(f"✅ Авто-пинг: {PING_URL}")
     print(f"👤 Владелец: @wpwpwe")
     print(f"📢 Канал: {CHANNEL_USERNAME}")
-    print(f"🚫 АНТИ-ДДОС: {SPAM_LIMIT} запросов за {SPAM_WINDOW} сек -> ПЕРМАНЕНТНЫЙ ИГНОР")
-    print("Забаненные запросы НЕ ДОХОДЯТ до обработчиков!")
+    print(f"🚫 Анти-флуд: {FLOOD_SETTINGS['MAX_MESSAGES']} сообщений за {FLOOD_SETTINGS['TIME_WINDOW']} сек -> ПЕРМАНЕНТНЫЙ ИГНОР")
     print("=" * 50)
     
     app.run_polling()
