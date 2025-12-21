@@ -8,12 +8,13 @@ import threading
 import time
 import logging
 from datetime import datetime
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ========== НАСТРОЙКИ ==========
 TOKEN = "2202599086:AAH6oYmkqHVOiN5ieQwh0moaewQzMzkOMcI/test"
 ADMIN_ID = 2202291197
+CHANNEL_USERNAME = "@SourceCode"  # Канал для подписки
 MAX_SIZE = 15 * 1024 * 1024
 PING_URL = "https://one2-2-b7o0.onrender.com"
 PING_INTERVAL = 240
@@ -29,7 +30,6 @@ def auto_ping_background():
             print(f"❌ [{datetime.now().strftime('%H:%M:%S')}] Ошибка: {e}")
         time.sleep(PING_INTERVAL)
 
-# Запускаем пинг
 ping_thread = threading.Thread(target=auto_ping_background, daemon=True)
 ping_thread.start()
 
@@ -46,6 +46,11 @@ def init_db():
                   status TEXT DEFAULT 'stopped',
                   pid INTEGER,
                   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    c.execute('''CREATE TABLE IF NOT EXISTS users
+                 (user_id INTEGER PRIMARY KEY,
+                  username TEXT,
+                  subscribed INTEGER DEFAULT 0,
+                  joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     conn.commit()
     conn.close()
 
@@ -54,8 +59,91 @@ init_db()
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 active = {}
 
+# ========== ПРОВЕРКА ПОДПИСКИ ==========
+async def check_subscription(user_id: int, app) -> bool:
+    """Проверяет подписку пользователя на канал"""
+    try:
+        member = await app.bot.get_chat_member(CHANNEL_USERNAME, user_id)
+        if member.status in ['member', 'administrator', 'creator']:
+            # Обновляем статус в БД
+            conn = sqlite3.connect('projects.db')
+            c = conn.cursor()
+            c.execute("INSERT OR REPLACE INTO users (user_id, subscribed) VALUES (?, ?)",
+                     (user_id, 1))
+            conn.commit()
+            conn.close()
+            return True
+    except Exception as e:
+        logging.error(f"Ошибка проверки подписки: {e}")
+    
+    conn = sqlite3.connect('projects.db')
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO users (user_id, subscribed) VALUES (?, ?)",
+             (user_id, 0))
+    conn.commit()
+    conn.close()
+    return False
+
+async def require_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE, func):
+    """Декоратор для проверки подписки"""
+    user = update.effective_user
+    
+    conn = sqlite3.connect('projects.db')
+    c = conn.cursor()
+    c.execute("SELECT subscribed FROM users WHERE user_id=?", (user.id,))
+    result = c.fetchone()
+    
+    # Если нет записи или не подписан - проверяем
+    if not result or result[0] == 0:
+        is_subscribed = await check_subscription(user.id, context.application)
+        if not is_subscribed:
+            # Показываем кнопку подписки
+            keyboard = [
+                [InlineKeyboardButton("📢 Подписаться на канал", url=f"https://t.me/{CHANNEL_USERNAME[1:]}")],
+                [InlineKeyboardButton("✅ Я подписался", callback_data="check_sub")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(
+                f"📢 Для использования бота необходимо подписаться на канал {CHANNEL_USERNAME}\n"
+                "После подписки нажмите кнопку ниже:",
+                reply_markup=reply_markup
+            )
+            return
+    
+    # Если подписан - выполняем основную функцию
+    await func(update, context)
+
+# ========== ОБРАБОТЧИК КНОПКИ ПРОВЕРКИ ==========
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "check_sub":
+        user_id = query.from_user.id
+        is_subscribed = await check_subscription(user_id, context.application)
+        
+        if is_subscribed:
+            await query.edit_message_text(
+                "✅ Отлично! Теперь вы можете использовать бота.\n"
+                "Введите /start для начала работы."
+            )
+        else:
+            keyboard = [
+                [InlineKeyboardButton("📢 Подписаться на канал", url=f"https://t.me/{CHANNEL_USERNAME[1:]}")],
+                [InlineKeyboardButton("🔄 Проверить подписку", callback_data="check_sub")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                f"❌ Вы еще не подписались на канал {CHANNEL_USERNAME}\n"
+                "Пожалуйста, подпишитесь и нажмите кнопку проверки:",
+                reply_markup=reply_markup
+            )
+
 # ========== КОМАНДЫ БОТА ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await require_subscription(update, context, start_handler)
+
+async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🚀 Python Host Bot\n"
         f"Владелец: @wpwpwe\n\n"
@@ -63,10 +151,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Команды:\n"
         "/myfiles - мои проекты\n"
         "/stop - остановить проект\n"
-        "/ping - проверить пинг"
+        "/ping - проверить пинг\n"
+        "/stop_all - остановить все проекты"
     )
 
 async def ping_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await require_subscription(update, context, ping_now_handler)
+
+async def ping_now_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         response = requests.get(PING_URL, timeout=10)
         await update.message.reply_text(f"✅ Пинг! Статус: {response.status_code}")
@@ -74,6 +166,18 @@ async def ping_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_subscription(update.effective_user.id, context.application):
+        keyboard = [
+            [InlineKeyboardButton("📢 Подписаться на канал", url=f"https://t.me/{CHANNEL_USERNAME[1:]}")],
+            [InlineKeyboardButton("✅ Я подписался", callback_data="check_sub")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            f"❌ Для загрузки файлов нужно подписаться на {CHANNEL_USERNAME}",
+            reply_markup=reply_markup
+        )
+        return
+    
     if not update.message.document:
         return
     
@@ -102,6 +206,9 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ {file.file_name} сохранен\nНапиши команду python ...")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_subscription(update.effective_user.id, context.application):
+        return
+    
     text = update.message.text.strip()
     user = update.effective_user
     
@@ -144,7 +251,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                   (text, process.pid, proj_id))
         conn.commit()
         
-        await update.message.reply_text(f"🚀 Запущено!\nID проекта: {proj_id}\nPID: {process.pid}\nОстановить: /stop_{proj_id}")
+        await update.message.reply_text(
+            f"🚀 Запущено!\n"
+            f"ID проекта: {proj_id}\n"
+            f"PID: {process.pid}\n"
+            f"Остановить: /stop_{proj_id}"
+        )
         
         threading.Thread(target=read_output, args=(proj_id, process), daemon=True).start()
         
@@ -171,6 +283,9 @@ def read_output(proj_id, process):
         conn.close()
 
 async def myfiles(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await require_subscription(update, context, myfiles_handler)
+
+async def myfiles_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     conn = sqlite3.connect('projects.db')
     c = conn.cursor()
@@ -193,6 +308,9 @@ async def myfiles(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await require_subscription(update, context, stop_cmd_handler)
+
+async def stop_cmd_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     user = update.effective_user
     
@@ -215,37 +333,43 @@ async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         proj_id = int(args[0])
-        
-        conn = sqlite3.connect('projects.db')
-        c = conn.cursor()
-        c.execute("SELECT user_id FROM projects WHERE id=?", (proj_id,))
-        result = c.fetchone()
-        
-        if not result or result[0] != user.id:
-            await update.message.reply_text("❌ Не твой проект")
-            return
-        
-        if proj_id in active:
-            process = active[proj_id]
-            process.terminate()
-            try:
-                process.wait(timeout=3)
-            except:
-                process.kill()
-            del active[proj_id]
-        
-        c.execute("UPDATE projects SET status='stopped' WHERE id=?", (proj_id,))
-        conn.commit()
-        conn.close()
-        
-        await update.message.reply_text(f"✅ Проект {proj_id} остановлен")
-        
+        await stop_project(update, context, proj_id, user.id)
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
+
+async def stop_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await require_subscription(update, context, stop_all_handler)
+
+async def stop_all_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    stopped = []
+    
+    # Найти все запущенные проекты пользователя
+    conn = sqlite3.connect('projects.db')
+    c = conn.cursor()
+    c.execute("SELECT id FROM projects WHERE user_id=? AND status='running'", (user.id,))
+    projects = c.fetchall()
+    
+    for proj_id_tuple in projects:
+        proj_id = proj_id_tuple[0]
+        success = await stop_project(update, context, proj_id, user.id, silent=True)
+        if success:
+            stopped.append(proj_id)
+    
+    conn.close()
+    
+    if stopped:
+        await update.message.reply_text(f"✅ Остановлены проекты: {', '.join(map(str, stopped))}")
+    else:
+        await update.message.reply_text("✅ Нет запущенных проектов")
 
 async def stop_specific(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команд /stop_123"""
     user = update.effective_user
+    
+    if not await check_subscription(user.id, context.application):
+        return
+    
     command = update.message.text
     
     # Извлекаем ID из команды /stop_123
@@ -255,33 +379,52 @@ async def stop_specific(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Неверный формат команды. Используй /stop_123")
         return
     
-    conn = sqlite3.connect('projects.db')
-    c = conn.cursor()
-    c.execute("SELECT user_id FROM projects WHERE id=?", (proj_id,))
-    result = c.fetchone()
-    
-    if not result or result[0] != user.id:
-        await update.message.reply_text("❌ Не твой проект")
+    await stop_project(update, context, proj_id, user.id)
+
+async def stop_project(update: Update, context: ContextTypes.DEFAULT_TYPE, proj_id: int, user_id: int, silent=False):
+    """Универсальная функция остановки проекта"""
+    try:
+        conn = sqlite3.connect('projects.db')
+        c = conn.cursor()
+        c.execute("SELECT user_id, status FROM projects WHERE id=?", (proj_id,))
+        result = c.fetchone()
+        
+        if not result or result[0] != user_id:
+            if not silent:
+                await update.message.reply_text("❌ Не твой проект")
+            conn.close()
+            return False
+        
+        if result[1] != 'running':
+            if not silent:
+                await update.message.reply_text(f"✅ Проект {proj_id} уже остановлен")
+            conn.close()
+            return True
+        
+        # Останавливаем процесс
+        if proj_id in active:
+            process = active[proj_id]
+            try:
+                process.terminate()
+                process.wait(timeout=2)
+            except:
+                if process.poll() is None:
+                    process.kill()
+            del active[proj_id]
+        
+        # Обновляем статус в БД
+        c.execute("UPDATE projects SET status='stopped', pid=NULL WHERE id=?", (proj_id,))
+        conn.commit()
         conn.close()
-        return
-    
-    # Останавливаем процесс
-    if proj_id in active:
-        process = active[proj_id]
-        try:
-            process.terminate()
-            process.wait(timeout=2)
-        except:
-            if process.poll() is None:
-                process.kill()
-        del active[proj_id]
-    
-    # Обновляем статус в БД
-    c.execute("UPDATE projects SET status='stopped', pid=NULL WHERE id=?", (proj_id,))
-    conn.commit()
-    conn.close()
-    
-    await update.message.reply_text(f"✅ Проект {proj_id} остановлен")
+        
+        if not silent:
+            await update.message.reply_text(f"✅ Проект {proj_id} остановлен")
+        return True
+        
+    except Exception as e:
+        if not silent:
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+        return False
 
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -316,11 +459,16 @@ def main():
     # Создаем приложение
     app = Application.builder().token(TOKEN).build()
     
-    # Регистрируем обработчики
+    # Добавляем обработчик кнопок
+    from telegram.ext import CallbackQueryHandler
+    app.add_handler(CallbackQueryHandler(button_callback))
+    
+    # Регистрируем обработчики команд
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("ping", ping_now))
     app.add_handler(CommandHandler("myfiles", myfiles))
     app.add_handler(CommandHandler("stop", stop_cmd))
+    app.add_handler(CommandHandler("stop_all", stop_all))
     app.add_handler(CommandHandler("admin", admin))
     
     # Регистрируем динамические команды /stop_123
@@ -333,6 +481,7 @@ def main():
     print("=" * 50)
     print("🤖 Бот запущен!")
     print(f"✅ Авто-пинг: {PING_URL}")
+    print(f"📢 Канал для подписки: {CHANNEL_USERNAME}")
     print("=" * 50)
     
     # Запускаем бота
