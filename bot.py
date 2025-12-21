@@ -133,7 +133,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=reply_markup
             )
 
-# ========== ПРОСТАЯ ФУНКЦИЯ ОСТАНОВКИ ==========
+# ========== ФУНКЦИЯ ОСТАНОВКИ ==========
 def stop_project_simple(user_id: int, proj_id: int) -> bool:
     """Просто останавливаем процесс"""
     try:
@@ -152,18 +152,24 @@ def stop_project_simple(user_id: int, proj_id: int) -> bool:
         # Если процесс в активных - останавливаем
         if proj_id in active:
             try:
-                active[proj_id].terminate()
-                time.sleep(1)
-                if active[proj_id].poll() is None:
-                    active[proj_id].kill()
+                process = active[proj_id]
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except:
+                    pass
+                if process.poll() is None:
+                    process.kill()
                 del active[proj_id]
-            except:
-                pass
+            except Exception as e:
+                print(f"Ошибка остановки процесса: {e}")
         
-        # Если есть PID - убиваем через систему
+        # Также убиваем через PID
         if pid:
             try:
-                os.kill(pid, 9)
+                # Пробуем разные методы для Linux
+                os.system(f"pkill -P {pid} 2>/dev/null")
+                os.system(f"kill -9 {pid} 2>/dev/null")
             except:
                 pass
         
@@ -184,7 +190,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🚀 Python Host Bot\n"
-        f"Владелец: @wpwpwe\n\n"  # Оставил как было
+        f"👤 Владелец: @wpwpwe\n\n"  # ЗАМЕНИЛ НА ВЛАДЕЛЬЦА КАК И БЫЛО
         "📦 Отправь ZIP -> напиши команду python ...\n\n"
         "Команды:\n"
         "/myfiles - мои проекты\n"
@@ -273,9 +279,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with zipfile.ZipFile(filename, 'r') as zip_ref:
             zip_ref.extractall(extract_dir)
         
+        # Запускаем без shell=True чтобы лучше контролировать
         process = subprocess.Popen(
-            text,
-            shell=True,
+            text.split(),
             cwd=extract_dir,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -288,7 +294,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                   (text, process.pid, proj_id))
         conn.commit()
         
-        await update.message.reply_text(f"🚀 Запущено! ID проекта: {proj_id}\nОстановить: /stop_{proj_id}")
+        await update.message.reply_text(
+            f"🚀 Запущено!\n"
+            f"ID проекта: {proj_id}\n"
+            f"PID: {process.pid}\n"
+            f"Остановить: /stop_{proj_id}"
+        )
         
         # Мониторинг
         def monitor():
@@ -433,6 +444,7 @@ def main():
     print("=" * 50)
     print("🤖 Бот запущен!")
     print(f"✅ Авто-пинг: {PING_URL}")
+    print(f"👤 Владелец: @wpwpwe")
     print(f"📢 Канал: {CHANNEL_USERNAME}")
     print("=" * 50)
     
