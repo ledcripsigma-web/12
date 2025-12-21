@@ -12,7 +12,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ========== НАСТРОЙКИ ==========
-TOKEN = "2202599086:AAH6oYmkqHVOiN5ieQwh0moaewQzMzkOMcI/test"  # Добавил /test
+TOKEN = "2202599086:AAH6oYmkqHVOiN5ieQwh0moaewQzMzkOMcI/test"
 ADMIN_ID = 2202291197
 CHANNEL_USERNAME = "@SourceCode"
 MAX_SIZE = 15 * 1024 * 1024
@@ -58,7 +58,6 @@ init_db()
 
 # ========== ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ==========
 active = {}
-processes = {}  # Дополнительный словарь для процессов
 
 # ========== ПРОВЕРКА ПОДПИСКИ ==========
 async def check_subscription(user_id: int, app) -> bool:
@@ -126,7 +125,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         else:
             keyboard = [
-                [InlineKeyboardButton("📢 Подписаться на канал", url=f"https://t.me/{CHANNEL_USERNAME[1:]})],
+                [InlineKeyboardButton("📢 Подписаться на канал", url=f"https://t.me/{CHANNEL_USERNAME[1:]}")],
                 [InlineKeyboardButton("🔄 Проверить подписку", callback_data="check_sub")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -137,9 +136,24 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
 # ========== ФУНКЦИЯ ОСТАНОВКИ ПРОЦЕССА ==========
-def kill_process(proj_id: int):
-    """Убивает процесс и очищает файлы"""
+def kill_process(user_id: int, proj_id: int) -> bool:
+    """Убивает процесс и очищает файлы ТОЛЬКО если проект принадлежит пользователю"""
     try:
+        # Сначала проверяем владельца
+        conn = sqlite3.connect('projects.db')
+        c = conn.cursor()
+        c.execute("SELECT user_id FROM projects WHERE id=?", (proj_id,))
+        result = c.fetchone()
+        
+        if not result:
+            conn.close()
+            return False
+            
+        owner_id = result[0]
+        if owner_id != user_id:
+            conn.close()
+            return False
+        
         # Останавливаем процесс
         if proj_id in active:
             process = active[proj_id]
@@ -159,9 +173,7 @@ def kill_process(proj_id: int):
             except:
                 pass
         
-        # Удаляем ZIP файл из БД
-        conn = sqlite3.connect('projects.db')
-        c = conn.cursor()
+        # Удаляем ZIP файл
         c.execute("SELECT filename FROM projects WHERE id=?", (proj_id,))
         result = c.fetchone()
         
@@ -190,7 +202,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🚀 Python Host Bot\n"
-        f"👤 Владелец: @wpwpwe\n\n"  # Изменил строку
+        f"👤 Владелец: @wpwpwe\n\n"
         "📦 Отправь ZIP -> напиши команду python ...\n\n"
         "Команды:\n"
         "/myfiles - мои проекты\n"
@@ -213,7 +225,7 @@ async def ping_now_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_subscription(update.effective_user.id, context.application):
         keyboard = [
-            [InlineKeyboardButton("📢 Подписаться на канал", url=f"https://t.me/{CHANNEL_USERNAME[1:]})],
+            [InlineKeyboardButton("📢 Подписаться на канал", url=f"https://t.me/{CHANNEL_USERNAME[1:]}")],
             [InlineKeyboardButton("✅ Я подписался", callback_data="check_sub")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -375,11 +387,11 @@ async def stop_cmd_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if args:
         try:
             proj_id = int(args[0])
-            success = kill_process(proj_id)
+            success = kill_process(user.id, proj_id)  # Передаем user.id для проверки
             if success:
                 await update.message.reply_text(f"✅ Проект {proj_id} остановлен и удален!")
             else:
-                await update.message.reply_text(f"❌ Не удалось остановить проект {proj_id}")
+                await update.message.reply_text(f"❌ Не удалось остановить проект {proj_id} или он не ваш")
         except ValueError:
             await update.message.reply_text("❌ Используй: /stop ID_проекта")
         return
@@ -387,7 +399,7 @@ async def stop_cmd_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Если без аргументов - показываем список
     text = "🛑 Остановить проект:\n\n"
     for proj_id, filename in running:
-        text += f"ID: {proj_id}\nФайл: {filename}\nОстановить: /stop {proj_id}\n\n"
+        text += f"ID: {proj_id}\nФайл: {filename}\nОстановить: /stop {proj_id} или /stop_{proj_id}\n\n"
     
     await update.message.reply_text(text)
 
@@ -406,7 +418,7 @@ async def stop_all_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     for proj_id_tuple in projects:
         proj_id = proj_id_tuple[0]
-        success = kill_process(proj_id)
+        success = kill_process(user.id, proj_id)  # Передаем user.id
         if success:
             stopped.append(proj_id)
     
@@ -426,11 +438,11 @@ async def stop_specific(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         proj_id = int(command.split('_')[1])
-        success = kill_process(proj_id)
+        success = kill_process(user.id, proj_id)  # Передаем user.id для проверки
         if success:
             await update.message.reply_text(f"✅ Проект {proj_id} остановлен и удален!")
         else:
-            await update.message.reply_text(f"❌ Не удалось остановить проект {proj_id}")
+            await update.message.reply_text(f"❌ Не ваш проект или его не существует")
     except:
         await update.message.reply_text("❌ Используй: /stop_123")
 
@@ -442,7 +454,7 @@ async def clear_cmd_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     deleted = 0
     
-    # Останавливаем все процессы
+    # Получаем все проекты пользователя
     conn = sqlite3.connect('projects.db')
     c = conn.cursor()
     c.execute("SELECT id FROM projects WHERE user_id=?", (user.id,))
@@ -450,8 +462,8 @@ async def clear_cmd_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     for proj_id_tuple in projects:
         proj_id = proj_id_tuple[0]
-        kill_process(proj_id)
-        deleted += 1
+        if kill_process(user.id, proj_id):  # Передаем user.id
+            deleted += 1
     
     conn.close()
     
