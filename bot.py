@@ -59,7 +59,7 @@ app = None
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🚀 Python Host Bot\n"
-        f"✅ Авто-пинг: {PING_URL}\n\n"
+        f"Владелец: @wpwpwe\n\n"
         "📦 Отправь ZIP -> напиши команду python ...\n\n"
         "Команды:\n"
         "/myfiles - мои проекты\n"
