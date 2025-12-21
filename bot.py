@@ -61,7 +61,6 @@ active = {}
 
 # ========== ПРОВЕРКА ПОДПИСКИ ==========
 async def check_subscription(user_id: int, app) -> bool:
-    """Проверяет подписку пользователя на канал"""
     try:
         member = await app.bot.get_chat_member(CHANNEL_USERNAME, user_id)
         if member.status in ['member', 'administrator', 'creator']:
@@ -84,7 +83,6 @@ async def check_subscription(user_id: int, app) -> bool:
     return False
 
 async def require_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE, func):
-    """Декоратор для проверки подписки"""
     user = update.effective_user
     
     conn = sqlite3.connect('projects.db')
@@ -135,64 +133,48 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=reply_markup
             )
 
-# ========== ФУНКЦИЯ ОСТАНОВКИ ПРОЦЕССА ==========
-def kill_process(user_id: int, proj_id: int) -> bool:
-    """Убивает процесс и очищает файлы ТОЛЬКО если проект принадлежит пользователю"""
+# ========== ПРОСТАЯ ФУНКЦИЯ ОСТАНОВКИ ==========
+def stop_project_simple(user_id: int, proj_id: int) -> bool:
+    """Просто останавливаем процесс"""
     try:
-        # Сначала проверяем владельца
+        # Проверяем владельца
         conn = sqlite3.connect('projects.db')
         c = conn.cursor()
-        c.execute("SELECT user_id FROM projects WHERE id=?", (proj_id,))
+        c.execute("SELECT user_id, pid FROM projects WHERE id=?", (proj_id,))
         result = c.fetchone()
         
-        if not result:
-            conn.close()
-            return False
-            
-        owner_id = result[0]
-        if owner_id != user_id:
+        if not result or result[0] != user_id:
             conn.close()
             return False
         
-        # Останавливаем процесс
+        pid = result[1]
+        
+        # Если процесс в активных - останавливаем
         if proj_id in active:
-            process = active[proj_id]
             try:
-                process.terminate()
-                process.wait(timeout=2)
-            except:
-                if process.poll() is None:
-                    process.kill()
-            del active[proj_id]
-        
-        # Удаляем папку проекта
-        extract_dir = f"project_{proj_id}"
-        if os.path.exists(extract_dir):
-            try:
-                shutil.rmtree(extract_dir)
+                active[proj_id].terminate()
+                time.sleep(1)
+                if active[proj_id].poll() is None:
+                    active[proj_id].kill()
+                del active[proj_id]
             except:
                 pass
         
-        # Удаляем ZIP файл
-        c.execute("SELECT filename FROM projects WHERE id=?", (proj_id,))
-        result = c.fetchone()
+        # Если есть PID - убиваем через систему
+        if pid:
+            try:
+                os.kill(pid, 9)
+            except:
+                pass
         
-        if result:
-            zip_file = result[0]
-            if os.path.exists(zip_file):
-                try:
-                    os.remove(zip_file)
-                except:
-                    pass
-        
-        # Удаляем запись из БД
-        c.execute("DELETE FROM projects WHERE id=?", (proj_id,))
+        # Обновляем статус в БД
+        c.execute("UPDATE projects SET status='stopped' WHERE id=?", (proj_id,))
         conn.commit()
         conn.close()
         
         return True
     except Exception as e:
-        logging.error(f"Ошибка при остановке проекта {proj_id}: {e}")
+        logging.error(f"Ошибка остановки проекта {proj_id}: {e}")
         return False
 
 # ========== КОМАНДЫ БОТА ==========
@@ -202,14 +184,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🚀 Python Host Bot\n"
-        f"👤 Владелец: @wpwpwe\n\n"
+        f"Владелец: @wpwpwe\n\n"  # Оставил как было
         "📦 Отправь ZIP -> напиши команду python ...\n\n"
         "Команды:\n"
         "/myfiles - мои проекты\n"
         "/stop - остановить проект\n"
-        "/stop_all - остановить все проекты\n"
-        "/ping - проверить пинг\n"
-        "/clear - удалить все мои проекты"
+        "/ping - проверить пинг"
     )
 
 async def ping_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -299,9 +279,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cwd=extract_dir,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            universal_newlines=True
+            text=True
         )
         
         active[proj_id] = process
@@ -310,19 +288,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                   (text, process.pid, proj_id))
         conn.commit()
         
-        await update.message.reply_text(
-            f"🚀 Запущено!\n"
-            f"ID проекта: {proj_id}\n"
-            f"PID: {process.pid}\n"
-            f"Остановить: /stop_{proj_id}\n\n"
-            f"⚠️ Проект будет удален при остановке!"
-        )
+        await update.message.reply_text(f"🚀 Запущено! ID проекта: {proj_id}\nОстановить: /stop_{proj_id}")
         
-        # Мониторинг вывода
-        def monitor_process():
+        # Мониторинг
+        def monitor():
             try:
-                for line in iter(process.stdout.readline, ''):
-                    if not line:
+                while True:
+                    line = process.stdout.readline()
+                    if not line and process.poll() is not None:
                         break
             except:
                 pass
@@ -335,7 +308,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 conn.commit()
                 conn.close()
         
-        threading.Thread(target=monitor_process, daemon=True).start()
+        threading.Thread(target=monitor, daemon=True).start()
         
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
@@ -349,7 +322,7 @@ async def myfiles_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     conn = sqlite3.connect('projects.db')
     c = conn.cursor()
-    c.execute("SELECT id, filename, command, status, pid FROM projects WHERE user_id=? ORDER BY id DESC", (user.id,))
+    c.execute("SELECT id, filename, command, status, pid FROM projects WHERE user_id=? ORDER BY id DESC LIMIT 5", (user.id,))
     projects = c.fetchall()
     conn.close()
     
@@ -371,7 +344,6 @@ async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await require_subscription(update, context, stop_cmd_handler)
 
 async def stop_cmd_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = context.args
     user = update.effective_user
     
     conn = sqlite3.connect('projects.db')
@@ -384,48 +356,11 @@ async def stop_cmd_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ Нет запущенных проектов")
         return
     
-    if args:
-        try:
-            proj_id = int(args[0])
-            success = kill_process(user.id, proj_id)  # Передаем user.id для проверки
-            if success:
-                await update.message.reply_text(f"✅ Проект {proj_id} остановлен и удален!")
-            else:
-                await update.message.reply_text(f"❌ Не удалось остановить проект {proj_id} или он не ваш")
-        except ValueError:
-            await update.message.reply_text("❌ Используй: /stop ID_проекта")
-        return
-    
-    # Если без аргументов - показываем список
     text = "🛑 Остановить проект:\n\n"
     for proj_id, filename in running:
-        text += f"ID: {proj_id}\nФайл: {filename}\nОстановить: /stop {proj_id} или /stop_{proj_id}\n\n"
+        text += f"ID: {proj_id}\nФайл: {filename}\nОстановить: /stop_{proj_id}\n\n"
     
     await update.message.reply_text(text)
-
-async def stop_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await require_subscription(update, context, stop_all_handler)
-
-async def stop_all_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    stopped = []
-    
-    conn = sqlite3.connect('projects.db')
-    c = conn.cursor()
-    c.execute("SELECT id FROM projects WHERE user_id=? AND status='running'", (user.id,))
-    projects = c.fetchall()
-    conn.close()
-    
-    for proj_id_tuple in projects:
-        proj_id = proj_id_tuple[0]
-        success = kill_process(user.id, proj_id)  # Передаем user.id
-        if success:
-            stopped.append(proj_id)
-    
-    if stopped:
-        await update.message.reply_text(f"✅ Остановлены и удалены проекты: {', '.join(map(str, stopped))}")
-    else:
-        await update.message.reply_text("✅ Нет запущенных проектов")
 
 async def stop_specific(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик команд /stop_123"""
@@ -438,36 +373,16 @@ async def stop_specific(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         proj_id = int(command.split('_')[1])
-        success = kill_process(user.id, proj_id)  # Передаем user.id для проверки
+        
+        # Останавливаем
+        success = stop_project_simple(user.id, proj_id)
+        
         if success:
-            await update.message.reply_text(f"✅ Проект {proj_id} остановлен и удален!")
+            await update.message.reply_text(f"✅ Проект {proj_id} остановлен!")
         else:
             await update.message.reply_text(f"❌ Не ваш проект или его не существует")
     except:
         await update.message.reply_text("❌ Используй: /stop_123")
-
-async def clear_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Удалить все проекты пользователя"""
-    await require_subscription(update, context, clear_cmd_handler)
-
-async def clear_cmd_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    deleted = 0
-    
-    # Получаем все проекты пользователя
-    conn = sqlite3.connect('projects.db')
-    c = conn.cursor()
-    c.execute("SELECT id FROM projects WHERE user_id=?", (user.id,))
-    projects = c.fetchall()
-    
-    for proj_id_tuple in projects:
-        proj_id = proj_id_tuple[0]
-        if kill_process(user.id, proj_id):  # Передаем user.id
-            deleted += 1
-    
-    conn.close()
-    
-    await update.message.reply_text(f"✅ Удалено {deleted} проектов")
 
 async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -508,8 +423,6 @@ def main():
     app.add_handler(CommandHandler("ping", ping_now))
     app.add_handler(CommandHandler("myfiles", myfiles))
     app.add_handler(CommandHandler("stop", stop_cmd))
-    app.add_handler(CommandHandler("stop_all", stop_all))
-    app.add_handler(CommandHandler("clear", clear_cmd))
     app.add_handler(CommandHandler("admin", admin))
     
     app.add_handler(MessageHandler(filters.Regex(r'^/stop_\d+$'), stop_specific))
@@ -520,7 +433,6 @@ def main():
     print("=" * 50)
     print("🤖 Бот запущен!")
     print(f"✅ Авто-пинг: {PING_URL}")
-    print(f"👤 Владелец: @wpwpwe")
     print(f"📢 Канал: {CHANNEL_USERNAME}")
     print("=" * 50)
     
