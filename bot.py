@@ -108,7 +108,7 @@ def main():
         return
     
     # Отправляем стартовое сообщение
-    send_message_to_channel("🤖 Бот TON Price запущен!")
+    send_message_to_channel("тону хорошо конечно")
     
     # Запускаем пинг
     threading.Thread(target=ping_render, daemon=True).start()
