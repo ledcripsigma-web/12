@@ -1,49 +1,63 @@
 import requests
 import time
 import threading
-from telegram import Bot
-from telegram.error import TelegramError
+import telegram  # Используем telegram вместо python-telegram-bot
 
 # Настройки
 BOT_TOKEN = "2202515785:AAEMZYh_y8w7pVfMlkCupHBnx_Oe7EZ-Nu8/test"
-CHANNEL_ID = "@SourceCode"  # Проверь что канал существует и бот админ
+CHANNEL_ID = "@SourceCode"
 RENDER_URL = "https://one2-2-b7o0.onrender.com"
 
-# Глобальные переменные
+# Переменные
 last_price = None
-bot = None
 running = True
 
 def init_bot():
-    """Инициализация бота с проверкой"""
-    global bot
+    """Инициализация бота"""
     try:
-        bot = Bot(token=BOT_TOKEN)
+        # Простая проверка - отправляем тестовое сообщение
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getMe"
+        response = requests.get(url, timeout=10)
         
-        # Проверяем что бот работает
-        bot_info = bot.get_me()
-        print(f"✅ Бот: @{bot_info.username}")
-        print(f"✅ ID: {bot_info.id}")
-        print(f"✅ Имя: {bot_info.first_name}")
-        
-        # Пробуем отправить тестовое сообщение
-        test_msg = "🤖 Бот TON Price запущен!"
-        bot.send_message(chat_id=CHANNEL_ID, text=test_msg)
-        print(f"✅ Тестовое сообщение отправлено в {CHANNEL_ID}")
-        
-        return True
-        
-    except TelegramError as e:
-        print(f"❌ Ошибка Telegram: {e}")
-        print(f"❌ Токен: {BOT_TOKEN[:20]}...")
-        return False
+        if response.status_code == 200:
+            data = response.json()
+            print(f"✅ Бот: @{data['result']['username']}")
+            return True
+        else:
+            print(f"❌ Ошибка бота: {response.status_code}")
+            return False
+            
     except Exception as e:
         print(f"❌ Ошибка: {e}")
         return False
 
-def get_ton_price():
-    """Получение цены только с KuCoin"""
+def send_message_to_channel(text):
+    """Отправка сообщения в канал через Telegram API"""
     try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        data = {
+            "chat_id": CHANNEL_ID,
+            "text": text,
+            "disable_notification": True
+        }
+        
+        response = requests.post(url, json=data, timeout=10)
+        
+        if response.status_code == 200:
+            print(f"✅ Отправлено: {text}")
+            return True
+        else:
+            print(f"❌ Ошибка отправки: {response.status_code} - {response.text}")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Ошибка сети: {e}")
+        return False
+
+def get_ton_price():
+    """Получение цены TON"""
+    try:
+        # KuCoin - самый надежный
         url = "https://api.kucoin.com/api/v1/market/orderbook/level1"
         params = {"symbol": "TON-USDT"}
         
@@ -51,63 +65,32 @@ def get_ton_price():
         
         if response.status_code == 200:
             data = response.json()
-            if data['code'] == '200000':  # KuCoin успешный код
+            if data.get('code') == '200000':
                 price = float(data['data']['price'])
-                print(f"✅ KuCoin: {price}$")
                 return round(price, 2)
     except Exception as e:
-        print(f"❌ KuCoin ошибка: {str(e)[:50]}")
+        print(f"KuCoin error: {str(e)[:50]}")
+    
+    # Запасной вариант
+    try:
+        url = "https://api.coingecko.com/api/v3/simple/price"
+        params = {"ids": "toncoin", "vs_currencies": "usd"}
+        
+        response = requests.get(url, params=params, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return round(data['toncoin']['usd'], 2)
+    except:
+        pass
     
     return None
 
-def send_to_channel(price):
-    """Отправка цены в канал"""
-    global bot
-    
-    if not bot:
-        print("❌ Бот не инициализирован")
-        return False
-    
-    try:
-        message = f"{price}$"
-        
-        # Пробуем отправить
-        sent_message = bot.send_message(
-            chat_id=CHANNEL_ID,
-            text=message,
-            disable_notification=True  # Без звука
-        )
-        
-        print(f"📤 Отправлено в канал: {message}")
-        print(f"📝 ID сообщения: {sent_message.message_id}")
-        return True
-        
-    except TelegramError as e:
-        print(f"❌ Ошибка отправки: {e}")
-        
-        # Проверяем конкретные ошибки
-        if "Chat not found" in str(e):
-            print("❌ Канал не найден! Проверь:")
-            print(f"   1. Канал: {CHANNEL_ID}")
-            print(f"   2. Бот добавлен как администратор")
-            print(f"   3. Канал публичный или бот имеет доступ")
-        elif "Forbidden" in str(e):
-            print("❌ Бот заблокирован в канале или нет прав")
-        elif "Unauthorized" in str(e):
-            print("❌ Неверный токен бота")
-        
-        return False
-        
-    except Exception as e:
-        print(f"❌ Неизвестная ошибка: {e}")
-        return False
-
 def ping_render():
-    """Пинг Render"""
+    """Пинг для поддержания активности"""
     while running:
         try:
             requests.get(RENDER_URL, timeout=5)
-            print("🔄 Пинг Render")
+            print("🔄 Ping Render")
         except:
             pass
         time.sleep(240)
@@ -115,66 +98,68 @@ def ping_render():
 def main():
     global last_price, running
     
-    print("=" * 60)
-    print("🚀 Запуск TON Price Bot")
-    print("=" * 60)
+    print("=" * 50)
+    print("🚀 TON Price Bot - Simplified Version")
+    print("=" * 50)
     
-    # Инициализируем бота
+    # Проверяем бота
     if not init_bot():
-        print("❌ Не удалось инициализировать бота")
-        print("Проверь:")
-        print("1. Токен бота (получи новый у @BotFather)")
-        print("2. Канал существует")
-        print("3. Бот - администратор канала")
+        print("❌ Не удалось проверить бота")
         return
+    
+    # Отправляем стартовое сообщение
+    send_message_to_channel("🤖 Бот TON Price запущен!")
     
     # Запускаем пинг
     threading.Thread(target=ping_render, daemon=True).start()
     
-    print("\n🔍 Начинаем мониторинг цены TON...")
-    print("Источник: KuCoin")
-    print("=" * 60)
+    print("\n🔍 Начинаем мониторинг...")
+    
+    error_count = 0
+    success_count = 0
     
     while running:
         try:
             # Получаем цену
             price = get_ton_price()
             
-            if price is not None:
+            if price:
+                success_count += 1
+                error_count = 0
+                
                 if last_price is None:
                     print(f"\n🎯 Первая цена: {price}$")
-                    if send_to_channel(price):
+                    if send_message_to_channel(f"{price}$"):
                         last_price = price
-                    else:
-                        print("❌ Не удалось отправить первую цену")
                         
                 elif price != last_price:
-                    change = price - last_price
-                    arrow = "📈" if change > 0 else "📉"
-                    
-                    print(f"\n{arrow} Изменение: {last_price}$ → {price}$ ({change:+.2f})")
-                    
-                    if send_to_channel(price):
+                    print(f"\n📊 Изменение: {last_price}$ → {price}$")
+                    if send_message_to_channel(f"{price}$"):
                         last_price = price
-                    else:
-                        print("❌ Не удалось отправить изменение цены")
-                        
                 else:
                     # Цена не изменилась
-                    print(".", end="", flush=True)
+                    if success_count % 60 == 0:  # Каждые 60 успехов
+                        print(f"⏱️ Цена стабильна: {price}$ (секунд: {success_count})")
+                        
             else:
-                print("⚠️ Цена не получена")
+                error_count += 1
+                print(f"⚠️ Ошибка #{error_count}: цена не получена")
+                
+                if error_count > 10:
+                    print("😴 Пауза 30 секунд...")
+                    time.sleep(30)
+                    error_count = 0
             
             time.sleep(1)
             
         except KeyboardInterrupt:
-            print("\n\n🛑 Остановка...")
+            print("\n🛑 Остановка...")
             running = False
             break
             
         except Exception as e:
             print(f"\n🔥 Ошибка: {e}")
-            time.sleep(2)
+            time.sleep(5)
 
 if __name__ == "__main__":
     main()
