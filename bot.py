@@ -42,7 +42,7 @@ def ping_render():
             print("Пинг отправлен на Render")
         except Exception as e:
             print(f"Ошибка пинга: {e}")
-        time.sleep(240)  # 4 минуты
+        time.sleep(240)
 
 def monitor_prices():
     """Основной мониторинг цен"""
@@ -52,23 +52,18 @@ def monitor_prices():
     
     while running:
         try:
-            # Получаем цену
             price = get_ton_price()
             
             if price is not None:
-                # Если цена изменилась - отправляем
                 if last_price is None:
-                    # Первая отправка
                     send_price(price)
                     last_price = price
                 elif price != last_price:
                     send_price(price)
                     last_price = price
-                # else: цена не изменилась, ничего не делаем
             else:
                 print("Не удалось получить цену")
             
-            # Ждем ровно 1 секунду
             time.sleep(1)
             
         except KeyboardInterrupt:
@@ -76,7 +71,7 @@ def monitor_prices():
             running = False
             break
         except Exception as e:
-            print(f"Ошибка в цикле: {e}")
+            print(f"Ошибка: {e}")
             time.sleep(1)
 
 if __name__ == "__main__":
