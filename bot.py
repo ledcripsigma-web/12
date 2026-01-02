@@ -5,7 +5,7 @@ import telegram  # Используем telegram вместо python-telegram-bo
 
 # Настройки
 BOT_TOKEN = "2202515785:AAEMZYh_y8w7pVfMlkCupHBnx_Oe7EZ-Nu8/test"
-CHANNEL_ID = "@SourceCode"
+CHANNEL_ID = "@PriceTonUpdate"
 RENDER_URL = "https://one2-2-b7o0.onrender.com"
 
 # Переменные
