@@ -16,7 +16,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
-        self.wfile.write(b'TON Bot OK')
+        self.wfile.write(b'OK')
     
     def log_message(self, format, *args):
         pass
@@ -32,41 +32,28 @@ def send_telegram_message(text):
         }
         
         response = requests.post(url, json=data, timeout=10)
-        
-        if response.status_code == 200:
-            print(f"✅ Отправлено: {text}")
-            return True
-        else:
-            print(f"❌ Ошибка: {response.status_code} - {response.text[:100]}")
-            return False
+        return response.status_code == 200
             
-    except Exception as e:
-        print(f"❌ Ошибка сети: {e}")
+    except:
         return False
 
 def get_ton_price():
-    """Получение цены TON"""
+    """Получение цены TON (округление до 2 знаков)"""
     try:
         response = requests.get(API_URL, timeout=10)
         if response.status_code == 200:
             data = response.json()
             if data.get('code') == '200000':
-                return round(float(data['data']['price']), 4)
-    except Exception as e:
-        print(f"❌ KuCoin ошибка: {e}")
+                price = float(data['data']['price'])
+                # Обычное математическое округление
+                return round(price, 2)
+    except:
+        pass
     return None
 
 def price_monitor():
     """Мониторинг цены"""
     global last_price
-    
-    print("🚀 Мониторинг TON запущен")
-    
-    # Тест бота
-    print("🔧 Тестирую бота...")
-    if not send_telegram_message("🤖 Бот TON Price запущен!"):
-        print("⚠️ Бот не смог отправить тестовое сообщение")
-        print("Проверь токен и права доступа к каналу")
     
     while True:
         try:
@@ -74,38 +61,33 @@ def price_monitor():
             
             if price:
                 if last_price is None:
-                    print(f"🆕 Первая цена: {price}$")
-                    send_telegram_message(f"{price}$")
-                    last_price = price
+                    # Первая цена
+                    if send_telegram_message(f"{price}$"):
+                        print(f"{price}$")
+                        last_price = price
                     
                 elif price != last_price:
-                    change = price - last_price
-                    arrow = "📈" if change > 0 else "📉"
-                    print(f"{arrow} Изменение: {last_price}$ → {price}$")
-                    send_telegram_message(f"{price}$")
-                    last_price = price
+                    # Цена изменилась
+                    if send_telegram_message(f"{price}$"):
+                        print(f"{price}$")
+                        last_price = price
                 else:
                     # Цена не изменилась
-                    print(f"⏸️ Цена: {price}$", end='\r')
-            else:
-                print("⚠️ Не получил цену")
+                    print(f"{price}$", end='\r')
             
             time.sleep(1)
             
         except Exception as e:
-            print(f"🔥 Ошибка: {e}")
+            print(f"Ошибка: {e}")
             time.sleep(2)
 
 def start_http_server():
     """HTTP сервер для порта"""
     port = int(os.environ.get('PORT', 10000))
-    print(f"🌐 HTTP сервер на порту {port}")
     server = HTTPServer(('0.0.0.0', port), HealthHandler)
     server.serve_forever()
 
 def main():
-    print("=== ЗАПУСК БОТА ===")
-    
     # Запускаем мониторинг в отдельном потоке
     monitor_thread = threading.Thread(target=price_monitor, daemon=True)
     monitor_thread.start()
