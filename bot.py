@@ -12,10 +12,10 @@ API_URL = "https://api.kucoin.com/api/v1/market/orderbook/level1?symbol=TON-USDT
 
 # Переменные
 last_price = None
-bot = None
+bot_instance = None
 running = True
 
-# === HTTP сервер для порта ===
+# === HTTP сервер ===
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -27,14 +27,12 @@ class HealthHandler(BaseHTTPRequestHandler):
         pass
 
 def start_http_server():
-    """Запускаем HTTP сервер для порта (обязательно для Web Service)"""
     port = int(os.environ.get('PORT', 10000))
     server = HTTPServer(('0.0.0.0', port), HealthHandler)
-    print(f"HTTP сервер запущен на порту {port}")
+    print(f"HTTP сервер запущен")
     server.serve_forever()
 
 def get_ton_price():
-    """Получение цены TON"""
     try:
         response = requests.get(API_URL, timeout=5)
         if response.status_code == 200:
@@ -45,24 +43,23 @@ def get_ton_price():
         pass
     return None
 
-def send_price(price):
-    """Отправка цены в канал"""
-    global bot
+def send_price_sync(price):
+    """Синхронная отправка сообщения"""
+    global bot_instance
     try:
-        if bot is None:
-            bot = Bot(token=BOT_TOKEN)
+        if bot_instance is None:
+            bot_instance = Bot(token=BOT_TOKEN)
         
         message = f"{price}$"
-        bot.send_message(chat_id=CHANNEL_ID, text=message)
+        bot_instance.send_message(chat_id=CHANNEL_ID, text=message)
         print(f"{price}$")
         return True
     except Exception as e:
-        print(f"Ошибка: {e}")
+        print(f"Ошибка отправки: {e}")
         return False
 
 def price_monitor():
-    """Мониторинг цен в отдельном потоке"""
-    global last_price, running
+    global last_price
     
     while running:
         try:
@@ -70,26 +67,24 @@ def price_monitor():
             
             if price:
                 if last_price is None:
-                    send_price(price)
+                    send_price_sync(price)
                     last_price = price
                 elif price != last_price:
-                    send_price(price)
+                    send_price_sync(price)
                     last_price = price
             
             time.sleep(1)
             
         except Exception as e:
-            print(f"Ошибка мониторинга: {e}")
+            print(f"Ошибка: {e}")
             time.sleep(2)
 
 def main():
-    global running
-    
-    # Запускаем мониторинг в отдельном потоке
+    # Запускаем мониторинг в фоне
     monitor_thread = threading.Thread(target=price_monitor, daemon=True)
     monitor_thread.start()
     
-    # Запускаем HTTP сервер (основной поток)
+    # HTTP сервер в основном потоке
     start_http_server()
 
 if __name__ == "__main__":
